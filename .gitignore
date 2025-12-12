@@ -1,0 +1,32 @@
+# Logs
+*.log
+qBitLauncher_log.txt
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# VS Code
+.vscode/
+
+# PowerShell
+*.ps1xml
+
+# Temporary files
+*.tmp
+*.temp
+~$*
+
+# IDE
+.idea/
+*.suo
+*.user
+*.sln.docstates
+
+# OS generated
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
