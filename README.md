@@ -16,7 +16,7 @@ A PowerShell post-download handler for qBittorrent that automatically extracts a
 - 📂 **Custom extraction path** - Choose where to extract files with folder browser
 - 📊 **Progress bar** - Visual feedback during extraction with percentage for 7-Zip
 - 🔍 **Smart executable discovery** - Finds all .exe files with icons and sorts by folder depth
-- 🎨 **Themed GUI** - Dark mode UI matching qBittorrent's style
+- 🎨 **Themed GUI** - Dracula dark theme with Light mode option (and much more to come!)
 - 🛡️ **Run as Administrator** - One-click UAC elevation for installers
 - 🔔 **Toast notifications** - Windows notifications for all actions
 - 📁 **Multiple actions** - Run, create desktop shortcut, or open folder
