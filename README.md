@@ -32,6 +32,16 @@ A PowerShell post-download handler for qBittorrent that automatically extracts a
 
 ## Installation
 
+### Getting the Script
+
+**Option 1: Clone the repository**
+```bash
+git clone https://github.com/DeonHolo/qBitLauncher.git
+```
+
+**Option 2: Download directly**
+- Download `qBitLauncher.ps1` from the [repo](https://github.com/DeonHolo/qBitLauncher)
+
 ### qBittorrent Integration
 
 1. Open qBittorrent → **Tools** → **Options** → **Downloads**
