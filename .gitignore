@@ -2,6 +2,9 @@
 *.log
 qBitLauncher_log.txt
 
+# User Settings
+config.json
+
 # Windows
 Thumbs.db
 ehthumbs.db
