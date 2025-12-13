@@ -1,5 +1,9 @@
 # qBitLauncher
 
+<p align="center">
+  <img src="https://i.imgur.com/0epFbuH.png" alt="qBitLauncher Logo" width="128">
+</p>
+
 A PowerShell post-download handler for qBittorrent that automatically extracts archives and launches executables with a clean GUI.
 
 ![PowerShell](https://img.shields.io/badge/PowerShell-5.1+-blue?logo=powershell)
@@ -53,10 +57,10 @@ When a torrent completes, the script will:
 | **Run** | Launch with administrator privileges (UAC prompt) |
 | **Shortcut** | Create desktop shortcut |
 | **Open Folder** | Open containing folder in Explorer |
-| **Settings** | Configure theme and sound preferences |
+| **Settings** | Configure theme preferences |
 | **Close** | Close the window |
 
-All actions play a sound effect (can be disabled) and show a confirmation popup.
+All actions play a sound effect and show a confirmation popup.
 
 ## Configuration
 
@@ -64,14 +68,13 @@ Settings are accessible via the **Settings** button in the main window, or edit 
 
 ```json
 {
-  "Theme": "qBitDark",
-  "SoundEnabled": true
+  "Theme": "Dracula"
 }
 ```
 
 ### Themes
 
-Available themes: `qBitDark`, `Dark`, `Light`
+Available themes: `Dracula`, `Light`
 
 ### Supported Extensions
 

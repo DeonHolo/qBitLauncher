@@ -21,6 +21,13 @@ public static extern bool ShowWindow(IntPtr hWnd, Int32 nCmdShow);
 $consoleWindow = [Console.Window]::GetConsoleWindow()
 [Console.Window]::ShowWindow($consoleWindow, 0) | Out-Null  # 0 = SW_HIDE
 
+# Set AppUserModelID for proper taskbar icon (separates from PowerShell)
+Add-Type -Name Shell32 -Namespace Win32 -MemberDefinition '
+[DllImport("shell32.dll", SetLastError = true)]
+public static extern void SetCurrentProcessExplicitAppUserModelID([MarshalAs(UnmanagedType.LPWStr)] string AppID);
+'
+[Win32.Shell32]::SetCurrentProcessExplicitAppUserModelID("qBitLauncher.App")
+
 # -------------------------
 # Configuration
 # -------------------------
@@ -28,7 +35,19 @@ $consoleWindow = [Console.Window]::GetConsoleWindow()
 $LogFile = Join-Path $PSScriptRoot "qBitLauncher_log.txt"
 $ArchiveExtensions = @('iso', 'zip', 'rar', '7z', 'img')
 $MediaExtensions = @('mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'mp3', 'flac', 'wav', 'aac', 'ogg', 'm4a')
-$ProcessableExtensions = @('exe') + $ArchiveExtensions
+
+# Load app icon
+$Global:AppIcon = $null
+$logoPath = Join-Path $PSScriptRoot "logo.png"
+if (Test-Path $logoPath) {
+    try {
+        $bitmap = [System.Drawing.Bitmap]::FromFile($logoPath)
+        $Global:AppIcon = [System.Drawing.Icon]::FromHandle($bitmap.GetHicon())
+    }
+    catch {
+        Write-Warning "Could not load app icon: $($_.Exception.Message)"
+    }
+}
 
 # -------------------------
 # qBittorrent Web API Configuration (for cleanup feature)
@@ -46,10 +65,10 @@ $Global:OriginalFilePath = $null
 # -------------------------
 # GUI: Theme and Color Definitions
 # -------------------------
-# Set the desired theme here: 'qBitDark', 'Dark', or 'Light'
-$Global:ThemeSelection = 'qBitDark' 
+# Set the desired theme here: 'Dracula', or 'Light'
+$Global:ThemeSelection = 'Dracula' 
 $Global:Themes = @{
-    Light    = @{
+    Light   = @{
         FormBack    = [System.Drawing.Color]::FromArgb(240, 240, 240)
         TextFore    = [System.Drawing.Color]::Black
         ControlBack = [System.Drawing.Color]::White
@@ -57,21 +76,13 @@ $Global:Themes = @{
         Border      = [System.Drawing.Color]::DimGray
         Accent      = [System.Drawing.Color]::DodgerBlue
     }
-    Dark     = @{
-        FormBack    = [System.Drawing.Color]::FromArgb(45, 45, 48)
-        TextFore    = [System.Drawing.Color]::White
-        ControlBack = [System.Drawing.Color]::FromArgb(30, 30, 30)
-        ButtonBack  = [System.Drawing.Color]::FromArgb(63, 63, 70)
-        Border      = [System.Drawing.Color]::FromArgb(85, 85, 91)
-        Accent      = [System.Drawing.Color]::FromArgb(0, 122, 204)
-    }
-    qBitDark = @{
-        FormBack    = [System.Drawing.Color]::FromArgb(45, 49, 58)  # Main dark background
-        TextFore    = [System.Drawing.Color]::FromArgb(220, 220, 220) # Off-white text
-        ControlBack = [System.Drawing.Color]::FromArgb(34, 38, 46)  # Slightly lighter control background
-        ButtonBack  = [System.Drawing.Color]::FromArgb(59, 64, 75)  # Button background
-        Border      = [System.Drawing.Color]::FromArgb(80, 85, 96)  # Border for buttons/controls
-        Accent      = [System.Drawing.Color]::FromArgb(80, 128, 175) # Blue from progress bar
+    Dracula = @{
+        FormBack    = [System.Drawing.Color]::FromArgb(40, 42, 54)   # Background #282A36 (Shadow Grey)
+        TextFore    = [System.Drawing.Color]::FromArgb(248, 248, 242) # Foreground #F8F8F2
+        ControlBack = [System.Drawing.Color]::FromArgb(32, 32, 32)   # Carbon Black #202020
+        ButtonBack  = [System.Drawing.Color]::FromArgb(47, 52, 64)   # Jet Black #2F3440
+        Border      = [System.Drawing.Color]::FromArgb(68, 71, 90)   # Current Line #44475A
+        Accent      = [System.Drawing.Color]::FromArgb(98, 114, 164)  # Comment #6272A4
     }
 }
 $Global:CurrentTheme = $Global:Themes[$Global:ThemeSelection]
@@ -101,16 +112,14 @@ Write-Host "qBitLauncher.ps1 started. Log file: $LogFile"
 # -------------------------
 $Global:ConfigFile = Join-Path $PSScriptRoot "config.json"
 $Global:UserSettings = @{
-    Theme        = "qBitDark"
-    SoundEnabled = $true
+    Theme = "Dracula"
 }
 
 function Get-UserSettings {
     if (Test-Path $Global:ConfigFile) {
         try {
             $json = Get-Content $Global:ConfigFile -Raw | ConvertFrom-Json
-            $Global:UserSettings.Theme = if ($json.Theme) { $json.Theme } else { "qBitDark" }
-            $Global:UserSettings.SoundEnabled = if ($null -ne $json.SoundEnabled) { $json.SoundEnabled } else { $true }
+            $Global:UserSettings.Theme = if ($json.Theme) { $json.Theme } else { "Dracula" }
             Write-LogMessage "Loaded settings from config.json"
         }
         catch {
@@ -146,7 +155,6 @@ function Play-ActionSound {
         [string]$Type = 'Success'
     )
     
-    if (-not $Global:UserSettings.SoundEnabled) { return }
     
     try {
         switch ($Type) {
@@ -254,19 +262,102 @@ function Get-7ZipPath {
 
 # -------------------------
 # Helper: Select Extraction Path (Verb-Noun: Select-ExtractionPath)
+# Uses modern Windows 10/11 folder picker dialog via COM IFileOpenDialog
 # -------------------------
 function Select-ExtractionPath {
     param([string]$DefaultPath)
     
-    $folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog
-    $folderBrowser.Description = "Select extraction destination folder"
-    $folderBrowser.SelectedPath = $DefaultPath
-    $folderBrowser.ShowNewFolderButton = $true
+    # Add COM type definition for modern folder picker
+    Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+
+[ComImport, Guid("DC1C5A9C-E88A-4dde-A5A1-60F82A20AEF7")]
+public class FileOpenDialogRCW { }
+
+[ComImport, Guid("42f85136-db7e-439c-85f1-e4075d135fc8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IFileOpenDialog {
+    [PreserveSig] int Show([In] IntPtr hwndOwner);
+    void SetFileTypes();
+    void SetFileTypeIndex();
+    void GetFileTypeIndex();
+    void Advise();
+    void Unadvise();
+    void SetOptions([In] uint fos);
+    void GetOptions();
+    void SetDefaultFolder();
+    void SetFolder([In, MarshalAs(UnmanagedType.Interface)] IShellItem psi);
+    void GetFolder();
+    void GetCurrentSelection();
+    void SetFileName();
+    void GetFileName();
+    void SetTitle([In, MarshalAs(UnmanagedType.LPWStr)] string pszTitle);
+    void SetOkButtonLabel();
+    void SetFileNameLabel();
+    [PreserveSig] int GetResult([MarshalAs(UnmanagedType.Interface)] out IShellItem ppsi);
+    void AddPlace();
+    void SetDefaultExtension();
+    void Close();
+    void SetClientGuid();
+    void ClearClientData();
+    void SetFilter();
+    void GetResults();
+    void GetSelectedItems();
+}
+
+[ComImport, Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IShellItem {
+    void BindToHandler();
+    void GetParent();
+    [PreserveSig] int GetDisplayName([In] uint sigdnName, [MarshalAs(UnmanagedType.LPWStr)] out string ppszName);
+    void GetAttributes();
+    void Compare();
+}
+
+public static class FolderPicker {
+    public const uint FOS_PICKFOLDERS = 0x20;
+    public const uint FOS_FORCEFILESYSTEM = 0x40;
+    public const uint SIGDN_FILESYSPATH = 0x80058000;
     
-    if ($folderBrowser.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-        Write-LogMessage "User selected extraction path: $($folderBrowser.SelectedPath)"
-        return $folderBrowser.SelectedPath
+    public static string ShowDialog(string title, string defaultPath) {
+        var dialog = (IFileOpenDialog)new FileOpenDialogRCW();
+        dialog.SetOptions(FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+        dialog.SetTitle(title);
+        
+        if (dialog.Show(IntPtr.Zero) == 0) {
+            IShellItem result;
+            if (dialog.GetResult(out result) == 0) {
+                string path;
+                result.GetDisplayName(SIGDN_FILESYSPATH, out path);
+                return path;
+            }
+        }
+        return null;
     }
+}
+"@ -ErrorAction SilentlyContinue
+
+    try {
+        $selectedPath = [FolderPicker]::ShowDialog("Select extraction destination folder", $DefaultPath)
+        if ($selectedPath) {
+            Write-LogMessage "User selected extraction path: $selectedPath"
+            return $selectedPath
+        }
+    }
+    catch {
+        Write-LogMessage "Modern folder picker failed: $($_.Exception.Message)"
+        # Fallback to classic dialog
+        $folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog
+        $folderBrowser.Description = "Select extraction destination folder"
+        $folderBrowser.SelectedPath = $DefaultPath
+        $folderBrowser.ShowNewFolderButton = $true
+        
+        if ($folderBrowser.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            Write-LogMessage "User selected extraction path (fallback): $($folderBrowser.SelectedPath)"
+            return $folderBrowser.SelectedPath
+        }
+    }
+    
     Write-LogMessage "User cancelled folder selection."
     return $null
 }
@@ -309,6 +400,7 @@ function Show-ExtractionProgress {
     $form.BackColor = $colors.FormBack
     $form.Font = New-Object System.Drawing.Font("Segoe UI", 10)
     $form.TopMost = $true
+    if ($Global:AppIcon) { $form.Icon = $Global:AppIcon }
     
     $label = New-Object System.Windows.Forms.Label
     $label.Location = New-Object System.Drawing.Point(20, 15)
@@ -317,12 +409,34 @@ function Show-ExtractionProgress {
     $label.ForeColor = $colors.TextFore
     $form.Controls.Add($label)
     
-    $progressBar = New-Object System.Windows.Forms.ProgressBar
-    $progressBar.Location = New-Object System.Drawing.Point(20, 50)
-    $progressBar.Size = New-Object System.Drawing.Size(400, 25)
-    $progressBar.Style = 'Marquee'
-    $progressBar.MarqueeAnimationSpeed = 30
-    $form.Controls.Add($progressBar)
+    # Custom themed progress bar (panel-based for color control)
+    $progressPanel = New-Object System.Windows.Forms.Panel
+    $progressPanel.Location = New-Object System.Drawing.Point(20, 50)
+    $progressPanel.Size = New-Object System.Drawing.Size(400, 25)
+    $progressPanel.BackColor = $colors.ControlBack
+    $progressPanel.BorderStyle = 'FixedSingle'
+    $form.Controls.Add($progressPanel)
+    
+    $progressFill = New-Object System.Windows.Forms.Panel
+    $progressFill.Location = New-Object System.Drawing.Point(0, 0)
+    $progressFill.Size = New-Object System.Drawing.Size(0, 23)
+    $progressFill.BackColor = $colors.Accent
+    $progressPanel.Controls.Add($progressFill)
+    
+    # Marquee animation timer for indeterminate progress
+    $marqueeTimer = New-Object System.Windows.Forms.Timer
+    $marqueeTimer.Interval = 30
+    $marqueePos = 0
+    $marqueeWidth = 80
+    $marqueeTimer.Add_Tick({
+            $script:marqueePos = ($script:marqueePos + 3) % (400 + $marqueeWidth)
+            $startX = $script:marqueePos - $marqueeWidth
+            if ($startX -lt 0) { $startX = 0 }
+            $endX = [Math]::Min($script:marqueePos, 400)
+            $progressFill.Location = New-Object System.Drawing.Point($startX, 0)
+            $progressFill.Size = New-Object System.Drawing.Size(($endX - $startX), 23)
+        }.GetNewClosure())
+    $marqueeTimer.Start()
     
     $statusLabel = New-Object System.Windows.Forms.Label
     $statusLabel.Location = New-Object System.Drawing.Point(20, 85)
@@ -333,9 +447,11 @@ function Show-ExtractionProgress {
     
     # Store references for external access
     $form.Tag = @{
-        ProgressBar = $progressBar
-        StatusLabel = $statusLabel
-        MainLabel   = $label
+        ProgressPanel = $progressPanel
+        ProgressFill  = $progressFill
+        MarqueeTimer  = $marqueeTimer
+        StatusLabel   = $statusLabel
+        MainLabel     = $label
     }
     
     return $form
@@ -354,8 +470,14 @@ function Update-ProgressForm {
     
     $controls = $Form.Tag
     if ($Percentage -ge 0 -and $Percentage -le 100) {
-        $controls.ProgressBar.Style = 'Continuous'
-        $controls.ProgressBar.Value = $Percentage
+        # Stop marquee animation when switching to percentage mode
+        if ($controls.MarqueeTimer -and $controls.MarqueeTimer.Enabled) {
+            $controls.MarqueeTimer.Stop()
+        }
+        # Set progress fill width based on percentage
+        $fillWidth = [int]([Math]::Round(($Percentage / 100.0) * 398))
+        $controls.ProgressFill.Location = New-Object System.Drawing.Point(0, 0)
+        $controls.ProgressFill.Size = New-Object System.Drawing.Size($fillWidth, 23)
     }
     if ($Status) {
         $controls.StatusLabel.Text = $Status
@@ -654,6 +776,7 @@ function Show-ExtractionConfirmForm {
     $form.MinimizeBox = $false
     $form.BackColor = $colors.FormBack
     $form.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    if ($Global:AppIcon) { $form.Icon = $Global:AppIcon }
 
     # Message label
     $label = New-Object System.Windows.Forms.Label
@@ -752,13 +875,14 @@ function Show-SettingsForm {
     
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "Settings - qBitLauncher"
-    $form.Size = New-Object System.Drawing.Size(400, 250)
+    $form.Size = New-Object System.Drawing.Size(400, 180)
     $form.StartPosition = 'CenterScreen'
     $form.FormBorderStyle = 'FixedDialog'
     $form.MaximizeBox = $false
     $form.MinimizeBox = $false
     $form.BackColor = $colors.FormBack
     $form.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    if ($Global:AppIcon) { $form.Icon = $Global:AppIcon }
 
     # Theme label
     $themeLabel = New-Object System.Windows.Forms.Label
@@ -776,23 +900,13 @@ function Show-SettingsForm {
     $themeCombo.BackColor = $colors.ControlBack
     $themeCombo.ForeColor = $colors.TextFore
     $themeCombo.FlatStyle = 'Flat'
-    [void]$themeCombo.Items.AddRange(@('qBitDark', 'Dark', 'Light'))
+    [void]$themeCombo.Items.AddRange(@('Dracula', 'Light'))
     $themeCombo.SelectedItem = $Global:UserSettings.Theme
     $form.Controls.Add($themeCombo)
 
-    # Sound checkbox
-    $soundCheckbox = New-Object System.Windows.Forms.CheckBox
-    $soundCheckbox.Location = New-Object System.Drawing.Point(20, 70)
-    $soundCheckbox.Size = New-Object System.Drawing.Size(300, 25)
-    $soundCheckbox.Text = "Enable sound effects"
-    $soundCheckbox.Checked = $Global:UserSettings.SoundEnabled
-    $soundCheckbox.ForeColor = $colors.TextFore
-    $soundCheckbox.FlatStyle = 'Flat'
-    $form.Controls.Add($soundCheckbox)
-
     # Info label
     $infoLabel = New-Object System.Windows.Forms.Label
-    $infoLabel.Location = New-Object System.Drawing.Point(20, 110)
+    $infoLabel.Location = New-Object System.Drawing.Point(20, 60)
     $infoLabel.Size = New-Object System.Drawing.Size(340, 40)
     $infoLabel.Text = "Theme changes apply to new windows.`nSettings are saved to config.json"
     $infoLabel.ForeColor = [System.Drawing.Color]::FromArgb(150, 150, 150)
@@ -801,12 +915,11 @@ function Show-SettingsForm {
 
     # Buttons
     $saveButton = New-Object System.Windows.Forms.Button
-    $saveButton.Location = New-Object System.Drawing.Point(160, 160)
+    $saveButton.Location = New-Object System.Drawing.Point(160, 100)
     $saveButton.Size = New-Object System.Drawing.Size(100, 35)
     $saveButton.Text = "&Save"
     $saveButton.Add_Click({
             $Global:UserSettings.Theme = $themeCombo.SelectedItem
-            $Global:UserSettings.SoundEnabled = $soundCheckbox.Checked
             $Global:ThemeSelection = $Global:UserSettings.Theme
             $Global:CurrentTheme = $Global:Themes[$Global:ThemeSelection]
             if (Save-UserSettings) {
@@ -817,7 +930,7 @@ function Show-SettingsForm {
         })
 
     $cancelButton = New-Object System.Windows.Forms.Button
-    $cancelButton.Location = New-Object System.Drawing.Point(270, 160)
+    $cancelButton.Location = New-Object System.Drawing.Point(270, 100)
     $cancelButton.Size = New-Object System.Drawing.Size(100, 35)
     $cancelButton.Text = "&Cancel"
     $cancelButton.Add_Click({
@@ -860,6 +973,7 @@ function Show-ExecutableSelectionForm {
     $form.BackColor = $colors.FormBack
     $font = New-Object System.Drawing.Font("Segoe UI", 10)
     $form.Font = $font
+    if ($Global:AppIcon) { $form.Icon = $Global:AppIcon }
 
     $label = New-Object System.Windows.Forms.Label
     $label.Location = New-Object System.Drawing.Point(10, 10)
@@ -1351,7 +1465,7 @@ if ($mainFileToProcess) {
                 Write-Host "`nExtraction complete. Searching for executables..."
                 $executablesInArchive = Get-AllExecutables -RootFolderPath $extractedDir
                 if ($executablesInArchive) {
-                    Show-ExecutableSelectionForm -FoundExecutables $executablesInArchive -WindowTitle "Archive Extracted"
+                    Show-ExecutableSelectionForm -FoundExecutables $executablesInArchive -WindowTitle "qBitLauncher"
                 }
                 else {
                     Write-Warning "No executables found in the extracted folder: $extractedDir"
@@ -1368,7 +1482,7 @@ if ($mainFileToProcess) {
         $executables = if ($mainFileToProcess -is [array]) { $mainFileToProcess } else { @($mainFileToProcess) }
         Write-LogMessage "Processing one or more executables."
         
-        Show-ExecutableSelectionForm -FoundExecutables $executables -WindowTitle "Executable Found"
+        Show-ExecutableSelectionForm -FoundExecutables $executables -WindowTitle "qBitLauncher"
     } 
     elseif ($MediaExtensions -contains $ext) {
         Write-LogMessage "File is a media file."
