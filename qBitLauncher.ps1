@@ -40,6 +40,10 @@ public const int ICON_BIG = 1;
 # -------------------------
 # Configuration
 # -------------------------
+# Version and update settings
+$Global:ScriptVersion = "1.0.0"
+$Global:GitHubRawUrl = "https://raw.githubusercontent.com/DeonHolo/qBitLauncher/main/qBitLauncher.ps1"
+
 # Log file in script folder for easy access
 $LogFile = Join-Path $PSScriptRoot "qBitLauncher_log.txt"
 $ArchiveExtensions = @('iso', 'zip', 'rar', '7z', 'img')
@@ -67,6 +71,139 @@ function Set-FormIcon {
         $handle = $Form.Handle
         [Win32.User32Icon]::SendMessage($handle, [Win32.User32Icon]::WM_SETICON, [IntPtr][Win32.User32Icon]::ICON_BIG, $Global:AppIcon.Handle) | Out-Null
         [Win32.User32Icon]::SendMessage($handle, [Win32.User32Icon]::WM_SETICON, [IntPtr][Win32.User32Icon]::ICON_SMALL, $Global:AppIcon.Handle) | Out-Null
+    }
+}
+
+# -------------------------
+# Auto-Update Functions
+# -------------------------
+function Get-RemoteVersion {
+    try {
+        # Fetch only the first part of the remote script to get version
+        $response = Invoke-WebRequest -Uri $Global:GitHubRawUrl -UseBasicParsing -TimeoutSec 10
+        $content = $response.Content
+        if ($content -match '\$Global:ScriptVersion\s*=\s*"([^"]+)"') {
+            return $Matches[1]
+        }
+    }
+    catch {
+        Write-LogMessage "Failed to check for updates: $($_.Exception.Message)"
+    }
+    return $null
+}
+
+function Test-UpdateAvailable {
+    $remoteVersion = Get-RemoteVersion
+    if (-not $remoteVersion) { return $null }
+    
+    try {
+        $local = [Version]$Global:ScriptVersion
+        $remote = [Version]$remoteVersion
+        if ($remote -gt $local) {
+            return $remoteVersion
+        }
+    }
+    catch {
+        Write-LogMessage "Version comparison failed: $($_.Exception.Message)"
+    }
+    return $null
+}
+
+function Update-Script {
+    param([switch]$Restart)
+    
+    try {
+        Write-LogMessage "Downloading update from GitHub..."
+        $response = Invoke-WebRequest -Uri $Global:GitHubRawUrl -UseBasicParsing -TimeoutSec 30
+        $newContent = $response.Content
+        
+        # Verify it looks like valid PowerShell
+        if ($newContent -notmatch '\$Global:ScriptVersion') {
+            throw "Downloaded content doesn't appear to be valid qBitLauncher script"
+        }
+        
+        # Get current script path
+        $scriptPath = $PSCommandPath
+        if (-not $scriptPath) { $scriptPath = $MyInvocation.PSCommandPath }
+        if (-not $scriptPath) { $scriptPath = Join-Path $PSScriptRoot "qBitLauncher.ps1" }
+        
+        # Backup current script
+        $backupPath = "$scriptPath.bak"
+        Copy-Item -Path $scriptPath -Destination $backupPath -Force
+        Write-LogMessage "Backup created: $backupPath"
+        
+        # Write new content
+        [IO.File]::WriteAllText($scriptPath, $newContent, [System.Text.Encoding]::UTF8)
+        Write-LogMessage "Script updated successfully!"
+        
+        Show-ToastNotification -Title "Update Complete" -Message "qBitLauncher has been updated. Please restart." -Type Info
+        
+        if ($Restart) {
+            # Restart the script
+            Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File `"$scriptPath`"" -WindowStyle Hidden
+            exit
+        }
+        return $true
+    }
+    catch {
+        Write-LogMessage "Update failed: $($_.Exception.Message)"
+        Show-ToastNotification -Title "Update Failed" -Message $_.Exception.Message -Type Error
+        return $false
+    }
+}
+
+function Show-UpdatePrompt {
+    param([string]$NewVersion)
+    
+    $colors = $Global:CurrentTheme
+    
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = "Update Available"
+    $form.Size = New-Object System.Drawing.Size(400, 180)
+    $form.StartPosition = 'CenterScreen'
+    $form.FormBorderStyle = 'FixedDialog'
+    $form.MaximizeBox = $false
+    $form.MinimizeBox = $false
+    $form.BackColor = $colors.FormBack
+    $form.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $form.Add_Shown({ Set-FormIcon -Form $this })
+
+    $label = New-Object System.Windows.Forms.Label
+    $label.Location = New-Object System.Drawing.Point(20, 20)
+    $label.Size = New-Object System.Drawing.Size(350, 50)
+    $label.Text = "A new version of qBitLauncher is available!`n`nCurrent: v$($Global:ScriptVersion)  →  New: v$NewVersion"
+    $label.ForeColor = $colors.TextFore
+    $form.Controls.Add($label)
+
+    $updateBtn = New-Object System.Windows.Forms.Button
+    $updateBtn.Location = New-Object System.Drawing.Point(180, 90)
+    $updateBtn.Size = New-Object System.Drawing.Size(90, 35)
+    $updateBtn.Text = "&Update"
+    $updateBtn.DialogResult = [System.Windows.Forms.DialogResult]::Yes
+
+    $skipBtn = New-Object System.Windows.Forms.Button
+    $skipBtn.Location = New-Object System.Drawing.Point(280, 90)
+    $skipBtn.Size = New-Object System.Drawing.Size(90, 35)
+    $skipBtn.Text = "&Skip"
+    $skipBtn.DialogResult = [System.Windows.Forms.DialogResult]::No
+
+    foreach ($btn in @($updateBtn, $skipBtn)) {
+        $btn.BackColor = $colors.ButtonBack
+        $btn.ForeColor = $colors.TextFore
+        $btn.FlatStyle = 'Flat'
+        $btn.FlatAppearance.BorderSize = 1
+        $btn.FlatAppearance.BorderColor = $colors.Accent
+        $form.Controls.Add($btn)
+    }
+
+    $form.AcceptButton = $updateBtn
+    $form.CancelButton = $skipBtn
+
+    $result = $form.ShowDialog()
+    $form.Dispose()
+
+    if ($result -eq [System.Windows.Forms.DialogResult]::Yes) {
+        Update-Script -Restart
     }
 }
 
@@ -780,7 +917,7 @@ function Show-SettingsForm {
     
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "Settings - qBitLauncher"
-    $form.Size = New-Object System.Drawing.Size(400, 180)
+    $form.Size = New-Object System.Drawing.Size(400, 230)
     $form.StartPosition = 'CenterScreen'
     $form.FormBorderStyle = 'FixedDialog'
     $form.MaximizeBox = $false
@@ -809,9 +946,47 @@ function Show-SettingsForm {
     $themeCombo.SelectedItem = $Global:UserSettings.Theme
     $form.Controls.Add($themeCombo)
 
+    # Version label
+    $versionLabel = New-Object System.Windows.Forms.Label
+    $versionLabel.Location = New-Object System.Drawing.Point(20, 60)
+    $versionLabel.Size = New-Object System.Drawing.Size(150, 25)
+    $versionLabel.Text = "Version: v$($Global:ScriptVersion)"
+    $versionLabel.ForeColor = $colors.TextFore
+    $form.Controls.Add($versionLabel)
+
+    # Check for Updates button
+    $updateButton = New-Object System.Windows.Forms.Button
+    $updateButton.Location = New-Object System.Drawing.Point(180, 55)
+    $updateButton.Size = New-Object System.Drawing.Size(170, 30)
+    $updateButton.Text = "Check for &Updates"
+    $updateButton.BackColor = $colors.ButtonBack
+    $updateButton.ForeColor = $colors.TextFore
+    $updateButton.FlatStyle = 'Flat'
+    $updateButton.FlatAppearance.BorderSize = 1
+    $updateButton.FlatAppearance.BorderColor = $colors.Accent
+    $updateButton.Add_Click({
+            $updateButton.Enabled = $false
+            $updateButton.Text = "Checking..."
+            [System.Windows.Forms.Application]::DoEvents()
+        
+            $newVersion = Test-UpdateAvailable
+            if ($newVersion) {
+                $form.Close()
+                Show-UpdatePrompt -NewVersion $newVersion
+            }
+            else {
+                $updateButton.Text = "Up to date!"
+                Play-ActionSound -Type Success
+                Start-Sleep -Milliseconds 1500
+                $updateButton.Text = "Check for &Updates"
+                $updateButton.Enabled = $true
+            }
+        })
+    $form.Controls.Add($updateButton)
+
     # Info label
     $infoLabel = New-Object System.Windows.Forms.Label
-    $infoLabel.Location = New-Object System.Drawing.Point(20, 60)
+    $infoLabel.Location = New-Object System.Drawing.Point(20, 95)
     $infoLabel.Size = New-Object System.Drawing.Size(340, 40)
     $infoLabel.Text = "Theme changes apply to new windows.`nSettings are saved to config.json"
     $infoLabel.ForeColor = [System.Drawing.Color]::FromArgb(150, 150, 150)
@@ -820,7 +995,7 @@ function Show-SettingsForm {
 
     # Buttons
     $saveButton = New-Object System.Windows.Forms.Button
-    $saveButton.Location = New-Object System.Drawing.Point(160, 100)
+    $saveButton.Location = New-Object System.Drawing.Point(160, 145)
     $saveButton.Size = New-Object System.Drawing.Size(100, 35)
     $saveButton.Text = "&Save"
     $saveButton.Add_Click({
@@ -835,7 +1010,7 @@ function Show-SettingsForm {
         })
 
     $cancelButton = New-Object System.Windows.Forms.Button
-    $cancelButton.Location = New-Object System.Drawing.Point(270, 100)
+    $cancelButton.Location = New-Object System.Drawing.Point(270, 145)
     $cancelButton.Size = New-Object System.Drawing.Size(100, 35)
     $cancelButton.Text = "&Cancel"
     $cancelButton.Add_Click({
@@ -857,6 +1032,7 @@ function Show-SettingsForm {
     $form.ShowDialog() | Out-Null
     $form.Dispose()
 }
+
 
 # ---------------------------------------------------
 # GUI: Main Executable Selection Form (with Icons)
@@ -1079,6 +1255,14 @@ function Show-ExecutableSelectionForm {
 # ===================================================================
 # MAIN SCRIPT LOGIC STARTS HERE
 # ===================================================================
+
+# Check for updates on startup (non-blocking)
+Write-LogMessage "Checking for updates..."
+$startupNewVersion = Test-UpdateAvailable
+if ($startupNewVersion) {
+    Write-LogMessage "Update available: v$startupNewVersion"
+    Show-UpdatePrompt -NewVersion $startupNewVersion
+}
 
 if (-not (Test-Path -LiteralPath $filePathFromQB)) {
     $errMsg = "Error: Initial path not found - $filePathFromQB"
