@@ -1,8 +1,8 @@
-# qBitLauncher
-
 <p align="center">
   <img src="https://i.imgur.com/0epFbuH.png" alt="qBitLauncher Logo" width="128">
 </p>
+
+# qBitLauncher
 
 A PowerShell post-download handler for qBittorrent that automatically extracts archives and launches executables with a clean GUI.
 
