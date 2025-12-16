@@ -70,8 +70,6 @@ When a torrent completes, the script will:
 | **Settings** | Configure theme preferences |
 | **Close** | Close the window |
 
-All actions play a sound effect and show a confirmation popup.
-
 ## Configuration
 
 Settings are accessible via the **Settings** button in the main window, or edit `config.json`:
