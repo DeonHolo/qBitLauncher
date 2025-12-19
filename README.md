@@ -41,7 +41,7 @@ git clone https://github.com/DeonHolo/qBitLauncher.git
 ### qBittorrent Integration
 
 1. qBittorrent → **Tools** → **Options** → **Downloads**
-2. Enable **"Run external program on torrent finished"**
+2. Under **"Run external program"**, enable **"Run on torrent finished"**
 3. Set command:
    ```
    powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\path\to\qBitLauncher.ps1" "%F"
