@@ -41,7 +41,7 @@ public const int ICON_BIG = 1;
 # Configuration
 # -------------------------
 # Version and update settings
-$Global:ScriptVersion = "1.2.1"
+$Global:ScriptVersion = "1.3.0"
 $Global:GitHubRawUrl = "https://raw.githubusercontent.com/DeonHolo/qBitLauncher/main/qBitLauncher.ps1"
 $Global:GitHubCommitsUrl = "https://github.com/DeonHolo/qBitLauncher/commits/main"
 
@@ -156,7 +156,13 @@ function Update-Script {
         [IO.File]::WriteAllText($scriptPath, $newContent, [System.Text.Encoding]::UTF8)
         Write-LogMessage "Script updated successfully!"
         
-        Show-ToastNotification -Title "Update Complete" -Message "qBitLauncher has been updated. Please restart." -Type Info
+        # Update the in-memory version so current GUI session shows correct version
+        if ($newContent -match '\$Global:ScriptVersion\s*=\s*"([^"]+)"') {
+            $Global:ScriptVersion = $Matches[1]
+            Write-LogMessage "In-memory version updated to: $($Global:ScriptVersion)"
+        }
+        
+        Show-ToastNotification -Title "Update Complete" -Message "qBitLauncher updated to v$($Global:ScriptVersion)!" -Type Info
         
         if ($Restart) {
             # Restart the script
@@ -286,7 +292,8 @@ Write-LogMessage "Received initial path from qBittorrent: '$filePathFromQB'"
 # -------------------------
 $Global:ConfigFile = Join-Path $Global:ScriptDir "config.json"
 $Global:UserSettings = @{
-    Theme = "Dracula"
+    Theme             = "Dracula"
+    ShowNotifications = $true
 }
 
 function Get-UserSettings {
@@ -294,6 +301,7 @@ function Get-UserSettings {
         try {
             $json = Get-Content $Global:ConfigFile -Raw | ConvertFrom-Json
             $Global:UserSettings.Theme = if ($json.Theme) { $json.Theme } else { "Dracula" }
+            $Global:UserSettings.ShowNotifications = if ($null -ne $json.ShowNotifications) { $json.ShowNotifications } else { $true }
             Write-LogMessage "Loaded settings from config.json"
         }
         catch {
@@ -321,9 +329,9 @@ function Save-UserSettings {
 Get-UserSettings
 
 # -------------------------
-# Helper: Play Sound Effect
+# Helper: Play Sound Effect (Verb-Noun: Invoke-ActionSound)
 # -------------------------
-function Play-ActionSound {
+function Invoke-ActionSound {
     param(
         [ValidateSet('Success', 'Error', 'Notify')]
         [string]$Type = 'Success'
@@ -343,7 +351,7 @@ function Play-ActionSound {
 }
 
 # -------------------------
-# Helper: Show Toast Notification (NEW)
+# Helper: Show Toast Notification
 # -------------------------
 function Show-ToastNotification {
     param(
@@ -352,6 +360,12 @@ function Show-ToastNotification {
         [ValidateSet('Info', 'Warning', 'Error')]
         [string]$Type = 'Info'
     )
+    
+    # Check if notifications are enabled
+    if (-not $Global:UserSettings.ShowNotifications) {
+        Write-LogMessage "Toast notification suppressed (disabled in settings): $Title - $Message"
+        return
+    }
     
     try {
         # Use Windows built-in notification via .NET
@@ -1019,7 +1033,7 @@ function Show-ExtractionConfirmForm {
             $archiveSize = (Get-Item $ArchivePath -ErrorAction SilentlyContinue).Length
             $validation = Test-ExtractionPath -Path $destTextBox.Text -RequiredSpaceBytes ($archiveSize * 3)
             if (-not $validation.Valid) {
-                Play-ActionSound -Type Error
+                Invoke-ActionSound -Type Error
                 [System.Windows.Forms.MessageBox]::Show($validation.Error, "Invalid Path", 'OK', 'Warning')
                 return
             }
@@ -1061,7 +1075,7 @@ function Show-SettingsForm {
     
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "Settings - qBitLauncher"
-    $form.Size = New-Object System.Drawing.Size(400, 310)
+    $form.Size = New-Object System.Drawing.Size(400, 350)
     $form.StartPosition = 'CenterScreen'
     $form.FormBorderStyle = 'FixedDialog'
     $form.MaximizeBox = $false
@@ -1090,9 +1104,19 @@ function Show-SettingsForm {
     $themeCombo.SelectedItem = $Global:UserSettings.Theme
     $form.Controls.Add($themeCombo)
 
+    # Notifications checkbox
+    $notifyCheckbox = New-Object System.Windows.Forms.CheckBox
+    $notifyCheckbox.Location = New-Object System.Drawing.Point(20, 55)
+    $notifyCheckbox.Size = New-Object System.Drawing.Size(330, 25)
+    $notifyCheckbox.Text = "Show toast notifications"
+    $notifyCheckbox.ForeColor = $colors.TextFore
+    $notifyCheckbox.Checked = $Global:UserSettings.ShowNotifications
+    $notifyCheckbox.FlatStyle = 'Flat'
+    $form.Controls.Add($notifyCheckbox)
+
     # Version label
     $versionLabel = New-Object System.Windows.Forms.Label
-    $versionLabel.Location = New-Object System.Drawing.Point(20, 60)
+    $versionLabel.Location = New-Object System.Drawing.Point(20, 90)
     $versionLabel.Size = New-Object System.Drawing.Size(150, 25)
     $versionLabel.Text = "Version: v$($Global:ScriptVersion)"
     $versionLabel.ForeColor = $colors.TextFore
@@ -1100,7 +1124,7 @@ function Show-SettingsForm {
 
     # Check for Updates button
     $updateButton = New-Object System.Windows.Forms.Button
-    $updateButton.Location = New-Object System.Drawing.Point(180, 55)
+    $updateButton.Location = New-Object System.Drawing.Point(180, 85)
     $updateButton.Size = New-Object System.Drawing.Size(170, 30)
     $updateButton.Text = "Check for &Updates"
     Set-ThemedButton -Button $updateButton -Colors $colors
@@ -1115,7 +1139,7 @@ function Show-SettingsForm {
                 Show-UpdatePrompt -NewVersion $newVersion
             }
             else {
-                Play-ActionSound -Type Success
+                Invoke-ActionSound -Type Success
                 [System.Windows.Forms.MessageBox]::Show(
                     "You're running the latest version (v$($Global:ScriptVersion))!", 
                     "Up to Date", 'OK', 'Information')
@@ -1127,7 +1151,7 @@ function Show-SettingsForm {
 
     # Info label
     $infoLabel = New-Object System.Windows.Forms.Label
-    $infoLabel.Location = New-Object System.Drawing.Point(20, 95)
+    $infoLabel.Location = New-Object System.Drawing.Point(20, 125)
     $infoLabel.Size = New-Object System.Drawing.Size(340, 35)
     $infoLabel.Text = "Theme changes apply to new windows.`nSettings are saved to config.json"
     $infoLabel.ForeColor = $colors.SecondaryText
@@ -1136,7 +1160,7 @@ function Show-SettingsForm {
 
     # Keyboard shortcuts section
     $shortcutsLabel = New-Object System.Windows.Forms.Label
-    $shortcutsLabel.Location = New-Object System.Drawing.Point(20, 135)
+    $shortcutsLabel.Location = New-Object System.Drawing.Point(20, 165)
     $shortcutsLabel.Size = New-Object System.Drawing.Size(360, 60)
     $shortcutsLabel.Text = "Keyboard Shortcuts (hold Alt key):`nAlt+R: Run   |   Alt+S: Shortcut   |   Alt+O: Open Folder`nAlt+T: Settings   |   Alt+C: Close"
     $shortcutsLabel.ForeColor = $colors.SecondaryText
@@ -1145,22 +1169,23 @@ function Show-SettingsForm {
 
     # Buttons
     $saveButton = New-Object System.Windows.Forms.Button
-    $saveButton.Location = New-Object System.Drawing.Point(160, 220)
+    $saveButton.Location = New-Object System.Drawing.Point(160, 250)
     $saveButton.Size = New-Object System.Drawing.Size(100, 35)
     $saveButton.Text = "&Save"
     $saveButton.Add_Click({
             $Global:UserSettings.Theme = $themeCombo.SelectedItem
+            $Global:UserSettings.ShowNotifications = $notifyCheckbox.Checked
             $Global:ThemeSelection = $Global:UserSettings.Theme
             $Global:CurrentTheme = $Global:Themes[$Global:ThemeSelection]
             if (Save-UserSettings) {
-                Play-ActionSound -Type Success
+                Invoke-ActionSound -Type Success
                 [System.Windows.Forms.MessageBox]::Show("Settings saved!", "Settings", 'OK', 'Information')
             }
             $form.Close()
         })
 
     $cancelButton = New-Object System.Windows.Forms.Button
-    $cancelButton.Location = New-Object System.Drawing.Point(270, 220)
+    $cancelButton.Location = New-Object System.Drawing.Point(270, 250)
     $cancelButton.Size = New-Object System.Drawing.Size(100, 35)
     $cancelButton.Text = "&Cancel"
     $cancelButton.Add_Click({
@@ -1380,7 +1405,7 @@ function Show-ExecutableSelectionForm {
                 Rename-Item -LiteralPath $oldPath -NewName $newName -ErrorAction Stop
                 $item.Tag = $newPath
                 # Note: First column (Name) is automatically updated by LabelEdit
-                Play-ActionSound -Type Success
+                Invoke-ActionSound -Type Success
                 & $addLogEntry "Renamed: $oldName -> $newName"
             }
             catch {
@@ -1418,11 +1443,11 @@ function Show-ExecutableSelectionForm {
             if ($exe) {
                 try {
                     Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -Verb RunAs
-                    Play-ActionSound -Type Success
+                    Invoke-ActionSound -Type Success
                     & $addLogEntry "Launched: $($exe.Name)"
                 }
                 catch {
-                    Play-ActionSound -Type Error
+                    Invoke-ActionSound -Type Error
                     & $addLogEntry "Launch failed: $($exe.Name)"
                     [System.Windows.Forms.MessageBox]::Show("Failed to launch: $($_.Exception.Message)", "Error", 'OK', 'Error')
                 }
@@ -1445,11 +1470,11 @@ function Show-ExecutableSelectionForm {
                     $shortcut.TargetPath = $exe.FullName
                     $shortcut.WorkingDirectory = $exe.DirectoryName
                     $shortcut.Save()
-                    Play-ActionSound -Type Success
+                    Invoke-ActionSound -Type Success
                     & $addLogEntry "Shortcut: $shortcutName"
                 }
                 catch {
-                    Play-ActionSound -Type Error
+                    Invoke-ActionSound -Type Error
                     & $addLogEntry "Shortcut failed"
                     [System.Windows.Forms.MessageBox]::Show("Failed to create shortcut: $($_.Exception.Message)", "Error", 'OK', 'Error')
                 }
@@ -1662,4 +1687,5 @@ if ($mainFileToProcess) {
 
 Write-Host "`nScript actions complete."
 Write-LogMessage "Script finished."
+
 Write-LogMessage "--------------------------------------------------------`n"
