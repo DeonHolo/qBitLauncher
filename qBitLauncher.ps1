@@ -44,8 +44,14 @@ public const int ICON_BIG = 1;
 $Global:ScriptVersion = "1.0.0"
 $Global:GitHubRawUrl = "https://raw.githubusercontent.com/DeonHolo/qBitLauncher/main/qBitLauncher.ps1"
 
+# Determine script directory (handle PS2EXE compiled EXE where $PSScriptRoot is empty)
+$Global:ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } 
+elseif ($MyInvocation.MyCommand.Path) { Split-Path $MyInvocation.MyCommand.Path -Parent }
+elseif ([System.AppDomain]::CurrentDomain.BaseDirectory) { [System.AppDomain]::CurrentDomain.BaseDirectory.TrimEnd('\') }
+else { [Environment]::CurrentDirectory }
+
 # Log file in script folder for easy access
-$LogFile = Join-Path $PSScriptRoot "qBitLauncher_log.txt"
+$LogFile = Join-Path $Global:ScriptDir "qBitLauncher_log.txt"
 $ArchiveExtensions = @('iso', 'zip', 'rar', '7z', 'img')
 $MediaExtensions = @('mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'mp3', 'flac', 'wav', 'aac', 'ogg', 'm4a')
 
@@ -56,7 +62,7 @@ try {
     $iconBytes = [System.Convert]::FromBase64String($LogoIcoBase64)
     $iconStream = New-Object System.IO.MemoryStream(, $iconBytes)
     $Global:AppIcon = New-Object System.Drawing.Icon($iconStream)
-    Write-Host "App icon loaded successfully from embedded Base64."
+    # Icon loaded successfully (silent - no output in compiled EXE)
 }
 catch {
     Write-Warning "Could not load embedded app icon: $($_.Exception.Message)"
@@ -261,12 +267,12 @@ function Write-LogMessage {
 Write-LogMessage "--------------------------------------------------------"
 Write-LogMessage "Script started: qBitLauncher.ps1"
 Write-LogMessage "Received initial path from qBittorrent: '$filePathFromQB'"
-Write-Host "qBitLauncher.ps1 started. Log file: $LogFile"
+# Write-Host suppressed for PS2EXE compatibility
 
 # -------------------------
 # Configuration File System
 # -------------------------
-$Global:ConfigFile = Join-Path $PSScriptRoot "config.json"
+$Global:ConfigFile = Join-Path $Global:ScriptDir "config.json"
 $Global:UserSettings = @{
     Theme = "Dracula"
 }
@@ -553,6 +559,9 @@ public static class FolderPicker {
         var dialog = (IFileOpenDialog)new FileOpenDialogRCW();
         dialog.SetOptions(FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
         dialog.SetTitle(title);
+        
+        // Clear dialog's memory of the last folder to ensure we always open at defaultPath
+        dialog.ClearClientData();
         
         // Set initial folder if path exists
         if (!string.IsNullOrEmpty(defaultPath) && System.IO.Directory.Exists(defaultPath)) {
@@ -1385,12 +1394,27 @@ if ($startupNewVersion) {
     Show-UpdatePrompt -NewVersion $startupNewVersion
 }
 
+# Test mode: If no path provided (e.g., double-clicking EXE), show folder picker for testing
+if ([string]::IsNullOrWhiteSpace($filePathFromQB)) {
+    Write-LogMessage "No path provided - entering test mode"
+    
+    # Show folder picker for testing
+    $testPath = Select-ExtractionPath -DefaultPath ([Environment]::GetFolderPath('Desktop'))
+    
+    if ($testPath) {
+        $filePathFromQB = $testPath
+        Write-LogMessage "Test mode: User selected folder '$testPath'"
+    }
+    else {
+        Write-LogMessage "Test mode: User cancelled folder selection. Exiting."
+        exit 0
+    }
+}
+
 if (-not (Test-Path -LiteralPath $filePathFromQB)) {
     $errMsg = "Error: Initial path not found - $filePathFromQB"
-    Write-Error $errMsg
     Write-LogMessage "FATAL: $errMsg. Script exiting."
-    Show-ToastNotification -Title "qBitLauncher Error" -Message "Path not found: $filePathFromQB" -Type Error
-    Read-Host "Press Enter to exit..."
+    [System.Windows.Forms.MessageBox]::Show("Path not found:`n$filePathFromQB", "qBitLauncher Error", 'OK', 'Error')
     exit 1
 }
 

@@ -34,5 +34,14 @@ Desktop.ini
 .Spotlight-V100
 .Trashes
 
-# Internal Documentation (AI assistant notes)
+# Internal Documentation
 Docs/
+
+# Compiled executable (PS2EXE output)
+*.exe
+
+# Icon file
+*.ico
+
+# User config (generated at runtime)
+config.json
