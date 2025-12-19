@@ -60,10 +60,10 @@ jobs:
         if: steps.get_version.outputs.current != steps.calc_version.outputs.new
         run: |
           NEW_VERSION="${{ steps.calc_version.outputs.new }}"
-          # Use perl instead of sed for more reliable regex with special characters
-          perl -i -pe 's/\$Global:ScriptVersion\s*=\s*"[^"]*"/$Global:ScriptVersion = "'"$NEW_VERSION"'"/' qBitLauncher.ps1
+          # Use sed - escape $ with backslash in replacement string
+          sed -i 's/\$Global:ScriptVersion = "[^"]*"/\$Global:ScriptVersion = "'"$NEW_VERSION"'"/' qBitLauncher.ps1
           # Verify the change was made
-          grep -o 'ScriptVersion.*' qBitLauncher.ps1 | head -1
+          grep 'ScriptVersion' qBitLauncher.ps1 | head -1
           echo "Updated version to $NEW_VERSION"
       
       - name: Commit and push
