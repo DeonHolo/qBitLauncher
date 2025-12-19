@@ -46,6 +46,7 @@ git clone https://github.com/DeonHolo/qBitLauncher.git
    ```
    powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\path\to\qBitLauncher.ps1" "%F"
    ```
+> **Note:** Replace `C:\path\to\qBitLauncher.ps1` with the actual path where you saved the script.
 
 ## Usage
 
