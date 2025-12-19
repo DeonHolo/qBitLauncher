@@ -13,78 +13,68 @@ A PowerShell post-download handler for qBittorrent that automatically extracts a
 ## Features
 
 - 🗜️ **Auto-extraction** - Extracts ZIP, RAR, 7z, ISO, and IMG archives
-- 📂 **Custom extraction path** - Choose where to extract files with folder browser
-- 📊 **Progress bar** - Visual feedback during extraction with percentage for 7-Zip
-- 🔍 **Smart executable discovery** - Finds all .exe files with icons and sorts by folder depth
-- 🎨 **Themed GUI** - Dracula dark theme with Light mode option (and much more to come!)
+- 📂 **Custom extraction path** - Choose where to extract with modern folder picker
+- 📊 **Progress bar** - Visual feedback during extraction with cancel support
+- 🔍 **Smart executable discovery** - Finds .exe files with icons, sorted by folder depth
+- ✏️ **Inline rename** - Rename executables directly (F2, double-click, or right-click)
+- 📋 **Activity Log** - Real-time log panel showing all actions
+- 🎨 **Themed GUI** - Dracula dark theme with Light mode option
 - 🛡️ **Run as Administrator** - One-click UAC elevation for installers
 - 🔔 **Toast notifications** - Windows notifications for all actions
-- 📁 **Multiple actions** - Run, create desktop shortcut, or open folder
-
+- 📦 **Auto-update** - Checks for updates on startup
 
 ## Requirements
 
 - Windows 10/11
 - PowerShell 5.1+
-- **One of the following extractors:**
-  - [7-Zip](https://www.7-zip.org/) (recommended - shows extraction progress in GUI)
-  - [WinRAR](https://www.win-rar.com/)
+- [7-Zip](https://www.7-zip.org/) (recommended) or [WinRAR](https://www.win-rar.com/)
 
 ## Installation
 
-### Getting the Script
-
-**Option 1: Clone the repository**
+**Clone:**
 ```bash
 git clone https://github.com/DeonHolo/qBitLauncher.git
 ```
 
-**Option 2: Download directly**
-- Download `qBitLauncher.ps1` from the [repo](https://github.com/DeonHolo/qBitLauncher)
+**Or download** `qBitLauncher.ps1` from the [repo](https://github.com/DeonHolo/qBitLauncher).
 
 ### qBittorrent Integration
 
-1. Open qBittorrent → **Tools** → **Options** → **Downloads**
+1. qBittorrent → **Tools** → **Options** → **Downloads**
 2. Enable **"Run external program on torrent finished"**
-3. Set the command:
+3. Set command:
    ```
    powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\path\to\qBitLauncher.ps1" "%F"
    ```
-   Replace `C:\path\to\` with the actual path to the script.
 
 ## Usage
 
-When a torrent completes, the script will:
-
-1. **For archives**: Prompt to extract (with custom path option), then show executable selection
-2. **For folders with executables**: Show executable selection directly with icons
-3. **For media files**: Open the containing folder
+When a torrent completes:
+- **Archives**: Extract → show executables
+- **Executables**: Show selection GUI
+- **Media**: Open containing folder
 
 ### GUI Actions
 
-| Button | Action |
-|--------|--------|
-| **Run** | Launch with administrator privileges (UAC prompt) |
-| **Shortcut** | Create desktop shortcut |
-| **Open Folder** | Open containing folder in Explorer |
-| **Settings** | Configure theme preferences |
-| **Close** | Close the window |
+| Button | Action | Shortcut |
+|--------|--------|----------|
+| **Run** | Launch as admin | `Alt+R` |
+| **Shortcut** | Create desktop shortcut | `Alt+S` |
+| **Open Folder** | Open in Explorer | `Alt+O` |
+| **Rename** | Rename executable | `Alt+N`, `F2`, double-click |
+| **Settings** | Configure theme | `Alt+T` |
+| **Close** | Close window | `Alt+C` |
 
 ## Configuration
 
-Settings are accessible via the **Settings** button in the main window, or edit `config.json`:
-
+Edit via **Settings** button or `config.json`:
 ```json
-{
-  "Theme": "Dracula"
-}
+{ "Theme": "Dracula" }
 ```
 
-### Themes
+**Themes**: `Dracula`, `Light`
 
-Available themes: `Dracula`, `Light`
-
-### Supported Extensions
+## Supported Extensions
 
 | Type | Extensions |
 |------|------------|
@@ -93,8 +83,9 @@ Available themes: `Dracula`, `Light`
 
 ## Logging
 
-Logs are written to `qBitLauncher_log.txt` in the script folder.
+- **GUI**: Real-time Activity Log panel
+- **File**: `qBitLauncher_log.txt`
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT License - see [LICENSE](LICENSE)

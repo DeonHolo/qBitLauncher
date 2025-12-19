@@ -9,6 +9,8 @@ on:
 jobs:
   bump-version:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Allow pushing commits
     # Only run if commit message contains version keywords
     if: |
       contains(github.event.head_commit.message, 'feat:') ||
