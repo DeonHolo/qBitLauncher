@@ -1,4 +1,4 @@
-# qBitLauncher_v3.ps1
+﻿# qBitLauncher_v3.ps1
 
 param(
     [string]$filePathFromQB 
@@ -41,8 +41,9 @@ public const int ICON_BIG = 1;
 # Configuration
 # -------------------------
 # Version and update settings
-$Global:ScriptVersion = "1.2.0"
+$Global:ScriptVersion = "1.2.1"
 $Global:GitHubRawUrl = "https://raw.githubusercontent.com/DeonHolo/qBitLauncher/main/qBitLauncher.ps1"
+$Global:GitHubCommitsUrl = "https://github.com/DeonHolo/qBitLauncher/commits/main"
 
 # Determine script directory (handle PS2EXE compiled EXE where $PSScriptRoot is empty)
 $Global:ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } 
@@ -178,7 +179,7 @@ function Show-UpdatePrompt {
     
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "Update Available"
-    $form.Size = New-Object System.Drawing.Size(400, 180)
+    $form.Size = New-Object System.Drawing.Size(400, 220)
     $form.StartPosition = 'CenterScreen'
     $form.FormBorderStyle = 'FixedDialog'
     $form.MaximizeBox = $false
@@ -190,18 +191,28 @@ function Show-UpdatePrompt {
     $label = New-Object System.Windows.Forms.Label
     $label.Location = New-Object System.Drawing.Point(20, 20)
     $label.Size = New-Object System.Drawing.Size(350, 50)
-    $label.Text = "A new version of qBitLauncher is available!`n`nCurrent: v$($Global:ScriptVersion)  →  New: v$NewVersion"
+    $label.Text = "A new version of qBitLauncher is available!`n`nCurrent: v$($Global:ScriptVersion)  >>  New: v$NewVersion"
     $label.ForeColor = $colors.TextFore
     $form.Controls.Add($label)
 
+    # Changelog link
+    $linkLabel = New-Object System.Windows.Forms.LinkLabel
+    $linkLabel.Location = New-Object System.Drawing.Point(20, 75)
+    $linkLabel.Size = New-Object System.Drawing.Size(350, 20)
+    $linkLabel.Text = "View changelog (commits)"
+    $linkLabel.LinkColor = $colors.Accent
+    $linkLabel.ActiveLinkColor = $colors.TextFore
+    $linkLabel.Add_LinkClicked({ Start-Process $Global:GitHubCommitsUrl })
+    $form.Controls.Add($linkLabel)
+
     $updateBtn = New-Object System.Windows.Forms.Button
-    $updateBtn.Location = New-Object System.Drawing.Point(180, 90)
+    $updateBtn.Location = New-Object System.Drawing.Point(180, 120)
     $updateBtn.Size = New-Object System.Drawing.Size(90, 35)
     $updateBtn.Text = "&Update"
     $updateBtn.DialogResult = [System.Windows.Forms.DialogResult]::Yes
 
     $skipBtn = New-Object System.Windows.Forms.Button
-    $skipBtn.Location = New-Object System.Drawing.Point(280, 90)
+    $skipBtn.Location = New-Object System.Drawing.Point(280, 120)
     $skipBtn.Size = New-Object System.Drawing.Size(90, 35)
     $skipBtn.Text = "&Skip"
     $skipBtn.DialogResult = [System.Windows.Forms.DialogResult]::No
@@ -218,7 +229,8 @@ function Show-UpdatePrompt {
     $form.Dispose()
 
     if ($result -eq [System.Windows.Forms.DialogResult]::Yes) {
-        Update-Script -Restart
+        # Update script but don't restart - let GUI continue normally
+        Update-Script
     }
 }
 

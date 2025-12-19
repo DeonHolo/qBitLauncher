@@ -43,5 +43,8 @@ Docs/
 # Icon file
 *.ico
 
+# Backup files (created during updates)
+*.bak
+
 # User config (generated at runtime)
 config.json
