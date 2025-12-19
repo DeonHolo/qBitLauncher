@@ -1,8 +1,8 @@
-# qBitLauncher
-
 <p align="center">
   <img src="https://i.imgur.com/0epFbuH.png" alt="qBitLauncher Logo" width="128">
 </p>
+
+# qBitLauncher
 
 A PowerShell post-download handler for qBittorrent that automatically extracts archives and launches executables with a clean GUI.
 
@@ -69,8 +69,6 @@ When a torrent completes, the script will:
 | **Open Folder** | Open containing folder in Explorer |
 | **Settings** | Configure theme preferences |
 | **Close** | Close the window |
-
-All actions play a sound effect and show a confirmation popup.
 
 ## Configuration
 
