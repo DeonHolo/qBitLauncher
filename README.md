@@ -71,8 +71,7 @@ When a torrent completes:
 Edit via **Settings** button or `config.json`:
 ```json
 {
-  "Theme": "Dracula",
-  "Notifications": true
+  "Theme": "Dracula"
 }
 ```
 
