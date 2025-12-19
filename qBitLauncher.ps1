@@ -351,6 +351,165 @@ function Invoke-ActionSound {
 }
 
 # -------------------------
+# Helper: Themed Message Box (replaces standard MessageBox)
+# -------------------------
+function Show-ThemedMessageBox {
+    param(
+        [string]$Message,
+        [string]$Title = "qBitLauncher",
+        [ValidateSet('OK', 'OKCancel', 'YesNo', 'YesNoCancel')]
+        [string]$Buttons = 'OK',
+        [ValidateSet('None', 'Information', 'Warning', 'Error', 'Question')]
+        [string]$Icon = 'None'
+    )
+    
+    $colors = $Global:CurrentTheme
+    
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = $Title
+    $form.Size = New-Object System.Drawing.Size(400, 180)
+    $form.StartPosition = 'CenterScreen'
+    $form.FormBorderStyle = 'FixedDialog'
+    $form.MaximizeBox = $false
+    $form.MinimizeBox = $false
+    $form.BackColor = $colors.FormBack
+    $form.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $form.Add_Shown({ Set-FormIcon -Form $this })
+    
+    # Icon
+    $iconSize = 32
+    $iconLeft = 20
+    $textLeft = 65
+    
+    if ($Icon -ne 'None') {
+        $iconPicture = New-Object System.Windows.Forms.PictureBox
+        $iconPicture.Location = New-Object System.Drawing.Point($iconLeft, 25)
+        $iconPicture.Size = New-Object System.Drawing.Size($iconSize, $iconSize)
+        $iconPicture.SizeMode = 'CenterImage'
+        
+        $systemIcon = switch ($Icon) {
+            'Information' { [System.Drawing.SystemIcons]::Information }
+            'Warning' { [System.Drawing.SystemIcons]::Warning }
+            'Error' { [System.Drawing.SystemIcons]::Error }
+            'Question' { [System.Drawing.SystemIcons]::Question }
+            default { $null }
+        }
+        
+        if ($systemIcon) {
+            $iconPicture.Image = $systemIcon.ToBitmap()
+        }
+        $form.Controls.Add($iconPicture)
+    }
+    else {
+        $textLeft = 20
+    }
+    
+    # Message label
+    $label = New-Object System.Windows.Forms.Label
+    $label.Location = New-Object System.Drawing.Point($textLeft, 25)
+    $label.Size = New-Object System.Drawing.Size((350 - $textLeft), 60)
+    $label.Text = $Message
+    $label.ForeColor = $colors.TextFore
+    $form.Controls.Add($label)
+    
+    # Auto-size form height based on message length
+    $textSize = [System.Windows.Forms.TextRenderer]::MeasureText($Message, $form.Font, [System.Drawing.Size]::new((350 - $textLeft), 0), [System.Windows.Forms.TextFormatFlags]::WordBreak)
+    $requiredHeight = [Math]::Max(180, $textSize.Height + 130)
+    $form.Size = New-Object System.Drawing.Size(400, $requiredHeight)
+    $label.Size = New-Object System.Drawing.Size((350 - $textLeft), ($requiredHeight - 120))
+    
+    # Buttons
+    $buttonY = $requiredHeight - 80
+    $buttonWidth = 90
+    $buttonHeight = 35
+    
+    switch ($Buttons) {
+        'OK' {
+            $okBtn = New-Object System.Windows.Forms.Button
+            $okBtn.Location = New-Object System.Drawing.Point(150, $buttonY)
+            $okBtn.Size = New-Object System.Drawing.Size($buttonWidth, $buttonHeight)
+            $okBtn.Text = "&OK"
+            $okBtn.DialogResult = [System.Windows.Forms.DialogResult]::OK
+            Set-ThemedButton -Button $okBtn -Colors $colors
+            $form.Controls.Add($okBtn)
+            $form.AcceptButton = $okBtn
+        }
+        'OKCancel' {
+            $okBtn = New-Object System.Windows.Forms.Button
+            $okBtn.Location = New-Object System.Drawing.Point(100, $buttonY)
+            $okBtn.Size = New-Object System.Drawing.Size($buttonWidth, $buttonHeight)
+            $okBtn.Text = "&OK"
+            $okBtn.DialogResult = [System.Windows.Forms.DialogResult]::OK
+            Set-ThemedButton -Button $okBtn -Colors $colors
+            $form.Controls.Add($okBtn)
+            
+            $cancelBtn = New-Object System.Windows.Forms.Button
+            $cancelBtn.Location = New-Object System.Drawing.Point(200, $buttonY)
+            $cancelBtn.Size = New-Object System.Drawing.Size($buttonWidth, $buttonHeight)
+            $cancelBtn.Text = "&Cancel"
+            $cancelBtn.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+            Set-ThemedButton -Button $cancelBtn -Colors $colors
+            $form.Controls.Add($cancelBtn)
+            
+            $form.AcceptButton = $okBtn
+            $form.CancelButton = $cancelBtn
+        }
+        'YesNo' {
+            $yesBtn = New-Object System.Windows.Forms.Button
+            $yesBtn.Location = New-Object System.Drawing.Point(100, $buttonY)
+            $yesBtn.Size = New-Object System.Drawing.Size($buttonWidth, $buttonHeight)
+            $yesBtn.Text = "&Yes"
+            $yesBtn.DialogResult = [System.Windows.Forms.DialogResult]::Yes
+            Set-ThemedButton -Button $yesBtn -Colors $colors
+            $form.Controls.Add($yesBtn)
+            
+            $noBtn = New-Object System.Windows.Forms.Button
+            $noBtn.Location = New-Object System.Drawing.Point(200, $buttonY)
+            $noBtn.Size = New-Object System.Drawing.Size($buttonWidth, $buttonHeight)
+            $noBtn.Text = "&No"
+            $noBtn.DialogResult = [System.Windows.Forms.DialogResult]::No
+            Set-ThemedButton -Button $noBtn -Colors $colors
+            $form.Controls.Add($noBtn)
+            
+            $form.AcceptButton = $yesBtn
+            $form.CancelButton = $noBtn
+        }
+        'YesNoCancel' {
+            $yesBtn = New-Object System.Windows.Forms.Button
+            $yesBtn.Location = New-Object System.Drawing.Point(55, $buttonY)
+            $yesBtn.Size = New-Object System.Drawing.Size($buttonWidth, $buttonHeight)
+            $yesBtn.Text = "&Yes"
+            $yesBtn.DialogResult = [System.Windows.Forms.DialogResult]::Yes
+            Set-ThemedButton -Button $yesBtn -Colors $colors
+            $form.Controls.Add($yesBtn)
+            
+            $noBtn = New-Object System.Windows.Forms.Button
+            $noBtn.Location = New-Object System.Drawing.Point(155, $buttonY)
+            $noBtn.Size = New-Object System.Drawing.Size($buttonWidth, $buttonHeight)
+            $noBtn.Text = "&No"
+            $noBtn.DialogResult = [System.Windows.Forms.DialogResult]::No
+            Set-ThemedButton -Button $noBtn -Colors $colors
+            $form.Controls.Add($noBtn)
+            
+            $cancelBtn = New-Object System.Windows.Forms.Button
+            $cancelBtn.Location = New-Object System.Drawing.Point(255, $buttonY)
+            $cancelBtn.Size = New-Object System.Drawing.Size($buttonWidth, $buttonHeight)
+            $cancelBtn.Text = "&Cancel"
+            $cancelBtn.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+            Set-ThemedButton -Button $cancelBtn -Colors $colors
+            $form.Controls.Add($cancelBtn)
+            
+            $form.AcceptButton = $yesBtn
+            $form.CancelButton = $cancelBtn
+        }
+    }
+    
+    $result = $form.ShowDialog()
+    $form.Dispose()
+    return $result
+}
+
+# -------------------------
 # Helper: Show Toast Notification
 # -------------------------
 function Show-ToastNotification {
@@ -1034,7 +1193,7 @@ function Show-ExtractionConfirmForm {
             $validation = Test-ExtractionPath -Path $destTextBox.Text -RequiredSpaceBytes ($archiveSize * 3)
             if (-not $validation.Valid) {
                 Invoke-ActionSound -Type Error
-                [System.Windows.Forms.MessageBox]::Show($validation.Error, "Invalid Path", 'OK', 'Warning')
+                Show-ThemedMessageBox -Message $validation.Error -Title "Invalid Path" -Icon 'Warning'
                 return
             }
             $form.DialogResult = [System.Windows.Forms.DialogResult]::Yes
@@ -1140,9 +1299,7 @@ function Show-SettingsForm {
             }
             else {
                 Invoke-ActionSound -Type Success
-                [System.Windows.Forms.MessageBox]::Show(
-                    "You're running the latest version (v$($Global:ScriptVersion))!", 
-                    "Up to Date", 'OK', 'Information')
+                Show-ThemedMessageBox -Message "You're running the latest version (v$($Global:ScriptVersion))!" -Title "Up to Date" -Icon 'Information'
                 $updateButton.Text = "Check for &Updates"
                 $updateButton.Enabled = $true
             }
@@ -1179,7 +1336,7 @@ function Show-SettingsForm {
             $Global:CurrentTheme = $Global:Themes[$Global:ThemeSelection]
             if (Save-UserSettings) {
                 Invoke-ActionSound -Type Success
-                [System.Windows.Forms.MessageBox]::Show("Settings saved!", "Settings", 'OK', 'Information')
+                Show-ThemedMessageBox -Message "Settings saved!" -Title "Settings" -Icon 'Information'
             }
             $form.Close()
         })
@@ -1375,7 +1532,7 @@ function Show-ExecutableSelectionForm {
             $invalidChars = [System.IO.Path]::GetInvalidFileNameChars()
             foreach ($char in $invalidChars) {
                 if ($newName.Contains($char)) {
-                    [System.Windows.Forms.MessageBox]::Show("Invalid character in filename: $char", "Rename Error", 'OK', 'Error')
+                    Show-ThemedMessageBox -Message "Invalid character in filename: $char" -Title "Rename Error" -Icon 'Error'
                     $e.CancelEdit = $true
                     return
                 }
@@ -1396,7 +1553,7 @@ function Show-ExecutableSelectionForm {
         
             # Check if target exists
             if (Test-Path $newPath) {
-                [System.Windows.Forms.MessageBox]::Show("A file with that name already exists.", "Rename Error", 'OK', 'Error')
+                Show-ThemedMessageBox -Message "A file with that name already exists." -Title "Rename Error" -Icon 'Error'
                 $e.CancelEdit = $true
                 return
             }
@@ -1409,7 +1566,7 @@ function Show-ExecutableSelectionForm {
                 & $addLogEntry "Renamed: $oldName -> $newName"
             }
             catch {
-                [System.Windows.Forms.MessageBox]::Show("Failed to rename: $($_.Exception.Message)", "Rename Error", 'OK', 'Error')
+                Show-ThemedMessageBox -Message "Failed to rename: $($_.Exception.Message)" -Title "Rename Error" -Icon 'Error'
                 $e.CancelEdit = $true
                 & $addLogEntry "Rename failed: $oldName"
             }
@@ -1418,7 +1575,7 @@ function Show-ExecutableSelectionForm {
     # Helper to get selected executable
     $getSelectedExe = {
         if ($listView.SelectedItems.Count -eq 0) {
-            [System.Windows.Forms.MessageBox]::Show("Please select an executable first.", "No Selection", 'OK', 'Warning')
+            Show-ThemedMessageBox -Message "Please select an executable first." -Title "No Selection" -Icon 'Warning'
             return $null
         }
         $path = $listView.SelectedItems[0].Tag
@@ -1426,7 +1583,7 @@ function Show-ExecutableSelectionForm {
             return Get-Item -LiteralPath $path -ErrorAction Stop
         }
         catch {
-            [System.Windows.Forms.MessageBox]::Show("Could not access: $path", "Error", 'OK', 'Error')
+            Show-ThemedMessageBox -Message "Could not access: $path" -Title "Error" -Icon 'Error'
             return $null
         }
     }
@@ -1449,7 +1606,7 @@ function Show-ExecutableSelectionForm {
                 catch {
                     Invoke-ActionSound -Type Error
                     & $addLogEntry "Launch failed: $($exe.Name)"
-                    [System.Windows.Forms.MessageBox]::Show("Failed to launch: $($_.Exception.Message)", "Error", 'OK', 'Error')
+                    Show-ThemedMessageBox -Message "Failed to launch: $($_.Exception.Message)" -Title "Error" -Icon 'Error'
                 }
             }
         })
@@ -1476,7 +1633,7 @@ function Show-ExecutableSelectionForm {
                 catch {
                     Invoke-ActionSound -Type Error
                     & $addLogEntry "Shortcut failed"
-                    [System.Windows.Forms.MessageBox]::Show("Failed to create shortcut: $($_.Exception.Message)", "Error", 'OK', 'Error')
+                    Show-ThemedMessageBox -Message "Failed to create shortcut: $($_.Exception.Message)" -Title "Error" -Icon 'Error'
                 }
             }
         })
@@ -1589,7 +1746,7 @@ if ([string]::IsNullOrWhiteSpace($filePathFromQB)) {
 if (-not (Test-Path -LiteralPath $filePathFromQB)) {
     $errMsg = "Error: Initial path not found - $filePathFromQB"
     Write-LogMessage "FATAL: $errMsg. Script exiting."
-    [System.Windows.Forms.MessageBox]::Show("Path not found:`n$filePathFromQB", "qBitLauncher Error", 'OK', 'Error')
+    Show-ThemedMessageBox -Message "Path not found:`n$filePathFromQB" -Title "qBitLauncher Error" -Icon 'Error'
     exit 1
 }
 
