@@ -41,7 +41,7 @@ public const int ICON_BIG = 1;
 # Configuration
 # -------------------------
 # Version and update settings
-$Global:ScriptVersion = "1.2.1"
+$Global:ScriptVersion = "1.3.0"
 $Global:GitHubRawUrl = "https://raw.githubusercontent.com/DeonHolo/qBitLauncher/main/qBitLauncher.ps1"
 $Global:GitHubCommitsUrl = "https://github.com/DeonHolo/qBitLauncher/commits/main"
 
@@ -1662,4 +1662,5 @@ if ($mainFileToProcess) {
 
 Write-Host "`nScript actions complete."
 Write-LogMessage "Script finished."
+
 Write-LogMessage "--------------------------------------------------------`n"
