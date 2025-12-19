@@ -41,7 +41,7 @@ public const int ICON_BIG = 1;
 # Configuration
 # -------------------------
 # Version and update settings
-$Global:ScriptVersion = "1.2.0"
+$Global:ScriptVersion = "1.2.1"
 $Global:GitHubRawUrl = "https://raw.githubusercontent.com/DeonHolo/qBitLauncher/main/qBitLauncher.ps1"
 
 # Determine script directory (handle PS2EXE compiled EXE where $PSScriptRoot is empty)
