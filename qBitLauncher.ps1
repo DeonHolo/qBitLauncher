@@ -74,6 +74,19 @@ function Set-FormIcon {
     }
 }
 
+# Helper function to apply consistent theme styling to buttons
+function Set-ThemedButton {
+    param(
+        [System.Windows.Forms.Button]$Button,
+        [hashtable]$Colors = $Global:CurrentTheme
+    )
+    $Button.BackColor = $Colors.ButtonBack
+    $Button.ForeColor = $Colors.TextFore
+    $Button.FlatStyle = 'Flat'
+    $Button.FlatAppearance.BorderSize = 1
+    $Button.FlatAppearance.BorderColor = $Colors.Accent
+}
+
 # -------------------------
 # Auto-Update Functions
 # -------------------------
@@ -188,11 +201,7 @@ function Show-UpdatePrompt {
     $skipBtn.DialogResult = [System.Windows.Forms.DialogResult]::No
 
     foreach ($btn in @($updateBtn, $skipBtn)) {
-        $btn.BackColor = $colors.ButtonBack
-        $btn.ForeColor = $colors.TextFore
-        $btn.FlatStyle = 'Flat'
-        $btn.FlatAppearance.BorderSize = 1
-        $btn.FlatAppearance.BorderColor = $colors.Accent
+        Set-ThemedButton -Button $btn -Colors $colors
         $form.Controls.Add($btn)
     }
 
@@ -214,20 +223,22 @@ function Show-UpdatePrompt {
 $Global:ThemeSelection = 'Dracula' 
 $Global:Themes = @{
     Light   = @{
-        FormBack    = [System.Drawing.Color]::FromArgb(240, 240, 240)
-        TextFore    = [System.Drawing.Color]::Black
-        ControlBack = [System.Drawing.Color]::White
-        ButtonBack  = [System.Drawing.Color]::FromArgb(225, 225, 225)
-        Border      = [System.Drawing.Color]::DimGray
-        Accent      = [System.Drawing.Color]::DodgerBlue
+        FormBack      = [System.Drawing.Color]::FromArgb(240, 240, 240)
+        TextFore      = [System.Drawing.Color]::Black
+        ControlBack   = [System.Drawing.Color]::White
+        ButtonBack    = [System.Drawing.Color]::FromArgb(225, 225, 225)
+        Border        = [System.Drawing.Color]::DimGray
+        Accent        = [System.Drawing.Color]::DodgerBlue
+        SecondaryText = [System.Drawing.Color]::FromArgb(100, 100, 100)
     }
     Dracula = @{
-        FormBack    = [System.Drawing.Color]::FromArgb(40, 42, 54)   # Background #282A36 (Shadow Grey)
-        TextFore    = [System.Drawing.Color]::FromArgb(248, 248, 242) # Foreground #F8F8F2
-        ControlBack = [System.Drawing.Color]::FromArgb(32, 32, 32)   # Carbon Black #202020
-        ButtonBack  = [System.Drawing.Color]::FromArgb(47, 52, 64)   # Jet Black #2F3440
-        Border      = [System.Drawing.Color]::FromArgb(68, 71, 90)   # Current Line #44475A
-        Accent      = [System.Drawing.Color]::FromArgb(98, 114, 164)  # Comment #6272A4
+        FormBack      = [System.Drawing.Color]::FromArgb(40, 42, 54)   # Background #282A36 (Shadow Grey)
+        TextFore      = [System.Drawing.Color]::FromArgb(248, 248, 242) # Foreground #F8F8F2
+        ControlBack   = [System.Drawing.Color]::FromArgb(32, 32, 32)   # Carbon Black #202020
+        ButtonBack    = [System.Drawing.Color]::FromArgb(47, 52, 64)   # Jet Black #2F3440
+        Border        = [System.Drawing.Color]::FromArgb(68, 71, 90)   # Current Line #44475A
+        Accent        = [System.Drawing.Color]::FromArgb(98, 114, 164)  # Comment #6272A4
+        SecondaryText = [System.Drawing.Color]::FromArgb(150, 150, 150)  # Muted text
     }
 }
 $Global:CurrentTheme = $Global:Themes[$Global:ThemeSelection]
@@ -371,6 +382,72 @@ function Show-ToastNotification {
 }
 
 # -------------------------
+# Helper: Validate Extraction Path (Verb-Noun: Test-ExtractionPath)
+# -------------------------
+function Test-ExtractionPath {
+    param(
+        [string]$Path,
+        [long]$RequiredSpaceBytes = 0
+    )
+    
+    # Check if path is empty
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return @{ Valid = $false; Error = "Please enter a destination path." }
+    }
+    
+    # Check if path format is valid and drive exists
+    try {
+        $drive = [System.IO.Path]::GetPathRoot($Path)
+        if (-not $drive -or -not (Test-Path $drive)) {
+            return @{ Valid = $false; Error = "Drive '$drive' does not exist or is not accessible." }
+        }
+    }
+    catch {
+        return @{ Valid = $false; Error = "Invalid path format: $($_.Exception.Message)" }
+    }
+    
+    # Check disk space if required
+    if ($RequiredSpaceBytes -gt 0) {
+        try {
+            $driveLetter = $drive[0]
+            $driveInfo = Get-PSDrive -Name $driveLetter -ErrorAction SilentlyContinue
+            if ($driveInfo -and $driveInfo.Free -lt $RequiredSpaceBytes) {
+                $freeGB = [math]::Round($driveInfo.Free / 1GB, 2)
+                $reqGB = [math]::Round($RequiredSpaceBytes / 1GB, 2)
+                return @{ Valid = $false; Error = "Insufficient disk space. Need approximately ${reqGB}GB, only ${freeGB}GB available." }
+            }
+        }
+        catch {
+            Write-LogMessage "Could not check disk space: $($_.Exception.Message)"
+        }
+    }
+    
+    # Check write permission
+    try {
+        if (Test-Path $Path) {
+            # Directory exists, try to create a temp file
+            $testFile = Join-Path $Path ".qbit_write_test_$([Guid]::NewGuid().ToString('N').Substring(0,8))"
+            [System.IO.File]::WriteAllText($testFile, "test")
+            Remove-Item $testFile -Force -ErrorAction SilentlyContinue
+        }
+        else {
+            # Directory doesn't exist, check if we can create it
+            $parent = Split-Path $Path -Parent
+            if ($parent -and (Test-Path $parent)) {
+                $testFile = Join-Path $parent ".qbit_write_test_$([Guid]::NewGuid().ToString('N').Substring(0,8))"
+                [System.IO.File]::WriteAllText($testFile, "test")
+                Remove-Item $testFile -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+    catch {
+        return @{ Valid = $false; Error = "Cannot write to this location. It may be read-only or require administrator privileges." }
+    }
+    
+    return @{ Valid = $true; Error = $null }
+}
+
+# -------------------------
 # Helper: Find WinRAR.exe (Verb-Noun: Get-WinRARPath)
 # -------------------------
 function Get-WinRARPath {
@@ -464,10 +541,26 @@ public static class FolderPicker {
     public const uint FOS_FORCEFILESYSTEM = 0x40;
     public const uint SIGDN_FILESYSPATH = 0x80058000;
     
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern int SHCreateItemFromParsingName(
+        string pszPath, IntPtr pbc, 
+        [MarshalAs(UnmanagedType.LPStruct)] Guid riid, 
+        out IShellItem ppv);
+    
+    private static readonly Guid IShellItemGuid = new Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE");
+    
     public static string ShowDialog(string title, string defaultPath) {
         var dialog = (IFileOpenDialog)new FileOpenDialogRCW();
         dialog.SetOptions(FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
         dialog.SetTitle(title);
+        
+        // Set initial folder if path exists
+        if (!string.IsNullOrEmpty(defaultPath) && System.IO.Directory.Exists(defaultPath)) {
+            IShellItem folder;
+            if (SHCreateItemFromParsingName(defaultPath, IntPtr.Zero, IShellItemGuid, out folder) == 0) {
+                dialog.SetFolder(folder);
+            }
+        }
         
         if (dialog.Show(IntPtr.Zero) == 0) {
             IShellItem result;
@@ -536,7 +629,7 @@ function Show-ExtractionProgress {
     
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "Extracting..."
-    $form.Size = New-Object System.Drawing.Size(450, 150)
+    $form.Size = New-Object System.Drawing.Size(450, 180)
     $form.StartPosition = 'CenterScreen'
     $form.FormBorderStyle = 'FixedDialog'
     $form.MaximizeBox = $false
@@ -585,10 +678,23 @@ function Show-ExtractionProgress {
     
     $statusLabel = New-Object System.Windows.Forms.Label
     $statusLabel.Location = New-Object System.Drawing.Point(20, 85)
-    $statusLabel.Size = New-Object System.Drawing.Size(400, 20)
+    $statusLabel.Size = New-Object System.Drawing.Size(300, 20)
     $statusLabel.Text = "Please wait..."
     $statusLabel.ForeColor = $colors.TextFore
     $form.Controls.Add($statusLabel)
+    
+    # Cancel button
+    $cancelButton = New-Object System.Windows.Forms.Button
+    $cancelButton.Location = New-Object System.Drawing.Point(330, 100)
+    $cancelButton.Size = New-Object System.Drawing.Size(90, 30)
+    $cancelButton.Text = "&Cancel"
+    Set-ThemedButton -Button $cancelButton -Colors $colors
+    $cancelButton.Add_Click({
+            $form.Tag.Cancelled = $true
+            $statusLabel.Text = "Cancelling..."
+            $cancelButton.Enabled = $false
+        })
+    $form.Controls.Add($cancelButton)
     
     # Store references for external access
     $form.Tag = @{
@@ -597,10 +703,12 @@ function Show-ExtractionProgress {
         MarqueeTimer  = $marqueeTimer
         StatusLabel   = $statusLabel
         MainLabel     = $label
+        Cancelled     = $false
     }
     
     return $form
 }
+
 
 # -------------------------
 # Helper: Update Progress Form (Verb-Noun: Update-ProgressForm)
@@ -704,6 +812,16 @@ function Expand-ArchiveFile {
             
             # Read output and update progress
             while (-not $process.HasExited) {
+                # Check for cancellation
+                if ($progressForm.Tag.Cancelled) {
+                    Write-LogMessage "User cancelled extraction."
+                    try { $process.Kill() } catch {}
+                    $progressForm.Close()
+                    $progressForm.Dispose()
+                    Show-ToastNotification -Title "Extraction Cancelled" -Message "Extraction was cancelled by user." -Type Warning
+                    return $null
+                }
+                
                 $line = $process.StandardOutput.ReadLine()
                 if ($line -match '(\d+)%') {
                     $percent = [int]$Matches[1]
@@ -851,11 +969,7 @@ function Show-ExtractionConfirmForm {
     $browseButton.Location = New-Object System.Drawing.Point(580, 61)
     $browseButton.Size = New-Object System.Drawing.Size(90, 28)
     $browseButton.Text = "&Browse..."
-    $browseButton.BackColor = $colors.ButtonBack
-    $browseButton.ForeColor = $colors.TextFore
-    $browseButton.FlatStyle = 'Flat'
-    $browseButton.FlatAppearance.BorderSize = 1
-    $browseButton.FlatAppearance.BorderColor = $colors.Accent
+    Set-ThemedButton -Button $browseButton -Colors $colors
     $browseButton.Add_Click({
             $selected = Select-ExtractionPath -DefaultPath $destTextBox.Text
             if ($selected) {
@@ -869,7 +983,7 @@ function Show-ExtractionConfirmForm {
     $infoLabel.Location = New-Object System.Drawing.Point(20, 100)
     $infoLabel.Size = New-Object System.Drawing.Size(660, 40)
     $infoLabel.Text = "Full archive path: $ArchivePath"
-    $infoLabel.ForeColor = [System.Drawing.Color]::FromArgb(150, 150, 150)
+    $infoLabel.ForeColor = $colors.SecondaryText
     $infoLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9)
     $form.Controls.Add($infoLabel)
 
@@ -878,7 +992,19 @@ function Show-ExtractionConfirmForm {
     $extractButton.Location = New-Object System.Drawing.Point(450, 160)
     $extractButton.Size = New-Object System.Drawing.Size(100, 35)
     $extractButton.Text = "&Extract"
-    $extractButton.DialogResult = [System.Windows.Forms.DialogResult]::Yes
+    # Don't set DialogResult - we'll handle validation first
+    $extractButton.Add_Click({
+            # Validate path before accepting
+            $archiveSize = (Get-Item $ArchivePath -ErrorAction SilentlyContinue).Length
+            $validation = Test-ExtractionPath -Path $destTextBox.Text -RequiredSpaceBytes ($archiveSize * 3)
+            if (-not $validation.Valid) {
+                Play-ActionSound -Type Error
+                [System.Windows.Forms.MessageBox]::Show($validation.Error, "Invalid Path", 'OK', 'Warning')
+                return
+            }
+            $form.DialogResult = [System.Windows.Forms.DialogResult]::Yes
+            $form.Close()
+        }.GetNewClosure())
 
     $cancelButton = New-Object System.Windows.Forms.Button
     $cancelButton.Location = New-Object System.Drawing.Point(560, 160)
@@ -887,11 +1013,7 @@ function Show-ExtractionConfirmForm {
     $cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::No
 
     foreach ($button in @($extractButton, $cancelButton)) {
-        $button.BackColor = $colors.ButtonBack
-        $button.ForeColor = $colors.TextFore
-        $button.FlatStyle = 'Flat'
-        $button.FlatAppearance.BorderSize = 1
-        $button.FlatAppearance.BorderColor = $colors.Accent
+        Set-ThemedButton -Button $button -Colors $colors
         $form.Controls.Add($button)
     }
     
@@ -909,6 +1031,7 @@ function Show-ExtractionConfirmForm {
     return $result
 }
 
+
 # ---------------------------------------------------
 # GUI: Settings Form
 # ---------------------------------------------------
@@ -917,7 +1040,7 @@ function Show-SettingsForm {
     
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "Settings - qBitLauncher"
-    $form.Size = New-Object System.Drawing.Size(400, 230)
+    $form.Size = New-Object System.Drawing.Size(400, 310)
     $form.StartPosition = 'CenterScreen'
     $form.FormBorderStyle = 'FixedDialog'
     $form.MaximizeBox = $false
@@ -959,11 +1082,7 @@ function Show-SettingsForm {
     $updateButton.Location = New-Object System.Drawing.Point(180, 55)
     $updateButton.Size = New-Object System.Drawing.Size(170, 30)
     $updateButton.Text = "Check for &Updates"
-    $updateButton.BackColor = $colors.ButtonBack
-    $updateButton.ForeColor = $colors.TextFore
-    $updateButton.FlatStyle = 'Flat'
-    $updateButton.FlatAppearance.BorderSize = 1
-    $updateButton.FlatAppearance.BorderColor = $colors.Accent
+    Set-ThemedButton -Button $updateButton -Colors $colors
     $updateButton.Add_Click({
             $updateButton.Enabled = $false
             $updateButton.Text = "Checking..."
@@ -975,9 +1094,10 @@ function Show-SettingsForm {
                 Show-UpdatePrompt -NewVersion $newVersion
             }
             else {
-                $updateButton.Text = "Up to date!"
                 Play-ActionSound -Type Success
-                Start-Sleep -Milliseconds 1500
+                [System.Windows.Forms.MessageBox]::Show(
+                    "You're running the latest version (v$($Global:ScriptVersion))!", 
+                    "Up to Date", 'OK', 'Information')
                 $updateButton.Text = "Check for &Updates"
                 $updateButton.Enabled = $true
             }
@@ -987,15 +1107,24 @@ function Show-SettingsForm {
     # Info label
     $infoLabel = New-Object System.Windows.Forms.Label
     $infoLabel.Location = New-Object System.Drawing.Point(20, 95)
-    $infoLabel.Size = New-Object System.Drawing.Size(340, 40)
+    $infoLabel.Size = New-Object System.Drawing.Size(340, 35)
     $infoLabel.Text = "Theme changes apply to new windows.`nSettings are saved to config.json"
-    $infoLabel.ForeColor = [System.Drawing.Color]::FromArgb(150, 150, 150)
+    $infoLabel.ForeColor = $colors.SecondaryText
     $infoLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9)
     $form.Controls.Add($infoLabel)
 
+    # Keyboard shortcuts section
+    $shortcutsLabel = New-Object System.Windows.Forms.Label
+    $shortcutsLabel.Location = New-Object System.Drawing.Point(20, 135)
+    $shortcutsLabel.Size = New-Object System.Drawing.Size(360, 60)
+    $shortcutsLabel.Text = "Keyboard Shortcuts (hold Alt key):`nAlt+R: Run   |   Alt+S: Shortcut   |   Alt+O: Open Folder`nAlt+T: Settings   |   Alt+C: Close"
+    $shortcutsLabel.ForeColor = $colors.SecondaryText
+    $shortcutsLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $form.Controls.Add($shortcutsLabel)
+
     # Buttons
     $saveButton = New-Object System.Windows.Forms.Button
-    $saveButton.Location = New-Object System.Drawing.Point(160, 145)
+    $saveButton.Location = New-Object System.Drawing.Point(160, 220)
     $saveButton.Size = New-Object System.Drawing.Size(100, 35)
     $saveButton.Text = "&Save"
     $saveButton.Add_Click({
@@ -1010,7 +1139,7 @@ function Show-SettingsForm {
         })
 
     $cancelButton = New-Object System.Windows.Forms.Button
-    $cancelButton.Location = New-Object System.Drawing.Point(270, 145)
+    $cancelButton.Location = New-Object System.Drawing.Point(270, 220)
     $cancelButton.Size = New-Object System.Drawing.Size(100, 35)
     $cancelButton.Text = "&Cancel"
     $cancelButton.Add_Click({
@@ -1018,11 +1147,7 @@ function Show-SettingsForm {
         })
 
     foreach ($button in @($saveButton, $cancelButton)) {
-        $button.BackColor = $colors.ButtonBack
-        $button.ForeColor = $colors.TextFore
-        $button.FlatStyle = 'Flat'
-        $button.FlatAppearance.BorderSize = 1
-        $button.FlatAppearance.BorderColor = $colors.Accent
+        Set-ThemedButton -Button $button -Colors $colors
         $form.Controls.Add($button)
     }
     
@@ -1082,9 +1207,9 @@ function Show-ExecutableSelectionForm {
     $listView.SmallImageList = $imageList
     $listView.HeaderStyle = 'None'
     
-    # Add column for the path
+    # Add column for the path (dynamic width)
     $column = New-Object System.Windows.Forms.ColumnHeader
-    $column.Width = 700
+    $column.Width = $listView.ClientSize.Width - 5
     [void]$listView.Columns.Add($column)
     
     # Add executables with icons
@@ -1234,11 +1359,7 @@ function Show-ExecutableSelectionForm {
         })
 
     foreach ($button in @($runButton, $shortcutButton, $exploreButton, $settingsButton, $closeButton)) {
-        $button.BackColor = $colors.ButtonBack
-        $button.ForeColor = $colors.TextFore
-        $button.FlatStyle = 'Flat'
-        $button.FlatAppearance.BorderSize = 1
-        $button.FlatAppearance.BorderColor = $colors.Accent
+        Set-ThemedButton -Button $button -Colors $colors
         $form.Controls.Add($button)
     }
 
