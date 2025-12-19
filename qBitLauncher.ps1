@@ -162,7 +162,6 @@ function Update-Script {
             Write-LogMessage "In-memory version updated to: $($Global:ScriptVersion)"
         }
         
-        Show-ToastNotification -Title "Update Complete" -Message "qBitLauncher updated to v$($Global:ScriptVersion)!" -Type Info
         
         if ($Restart) {
             # Restart the script
@@ -173,7 +172,6 @@ function Update-Script {
     }
     catch {
         Write-LogMessage "Update failed: $($_.Exception.Message)"
-        Show-ToastNotification -Title "Update Failed" -Message $_.Exception.Message -Type Error
         return $false
     }
 }
@@ -189,7 +187,7 @@ function Show-UpdatePrompt {
     $form.StartPosition = 'CenterScreen'
     $form.FormBorderStyle = 'FixedDialog'
     $form.MaximizeBox = $false
-    $form.MinimizeBox = $false
+    $form.MinimizeBox = $true
     $form.BackColor = $colors.FormBack
     $form.Font = New-Object System.Drawing.Font("Segoe UI", 10)
     $form.Add_Shown({ Set-FormIcon -Form $this })
@@ -292,8 +290,7 @@ Write-LogMessage "Received initial path from qBittorrent: '$filePathFromQB'"
 # -------------------------
 $Global:ConfigFile = Join-Path $Global:ScriptDir "config.json"
 $Global:UserSettings = @{
-    Theme             = "Dracula"
-    ShowNotifications = $true
+    Theme = "Dracula"
 }
 
 function Get-UserSettings {
@@ -301,7 +298,6 @@ function Get-UserSettings {
         try {
             $json = Get-Content $Global:ConfigFile -Raw | ConvertFrom-Json
             $Global:UserSettings.Theme = if ($json.Theme) { $json.Theme } else { "Dracula" }
-            $Global:UserSettings.ShowNotifications = if ($null -ne $json.ShowNotifications) { $json.ShowNotifications } else { $true }
             Write-LogMessage "Loaded settings from config.json"
         }
         catch {
@@ -371,7 +367,7 @@ function Show-ThemedMessageBox {
     $form.StartPosition = 'CenterScreen'
     $form.FormBorderStyle = 'FixedDialog'
     $form.MaximizeBox = $false
-    $form.MinimizeBox = $false
+    $form.MinimizeBox = $true
     $form.BackColor = $colors.FormBack
     $form.Font = New-Object System.Drawing.Font("Segoe UI", 10)
     $form.Add_Shown({ Set-FormIcon -Form $this })
@@ -510,69 +506,6 @@ function Show-ThemedMessageBox {
 }
 
 # -------------------------
-# Helper: Show Toast Notification
-# -------------------------
-function Show-ToastNotification {
-    param(
-        [string]$Title = "qBitLauncher",
-        [string]$Message,
-        [ValidateSet('Info', 'Warning', 'Error')]
-        [string]$Type = 'Info'
-    )
-    
-    # Check if notifications are enabled
-    if (-not $Global:UserSettings.ShowNotifications) {
-        Write-LogMessage "Toast notification suppressed (disabled in settings): $Title - $Message"
-        return
-    }
-    
-    try {
-        # Use Windows built-in notification via .NET
-        [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
-        [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
-        
-        $template = @"
-<toast>
-    <visual>
-        <binding template="ToastText02">
-            <text id="1">$Title</text>
-            <text id="2">$Message</text>
-        </binding>
-    </visual>
-</toast>
-"@
-        
-        $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
-        $xml.LoadXml($template)
-        $toast = New-Object Windows.UI.Notifications.ToastNotification $xml
-        [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("qBitLauncher").Show($toast)
-        Write-LogMessage "Toast notification shown: $Title - $Message"
-    }
-    catch {
-        # Fallback to balloon tip if toast fails
-        try {
-            $notifyIcon = New-Object System.Windows.Forms.NotifyIcon
-            $notifyIcon.Icon = [System.Drawing.SystemIcons]::Information
-            $notifyIcon.Visible = $true
-            
-            $iconType = switch ($Type) {
-                'Warning' { [System.Windows.Forms.ToolTipIcon]::Warning }
-                'Error' { [System.Windows.Forms.ToolTipIcon]::Error }
-                default { [System.Windows.Forms.ToolTipIcon]::Info }
-            }
-            
-            $notifyIcon.ShowBalloonTip(3000, $Title, $Message, $iconType)
-            Start-Sleep -Milliseconds 3500
-            $notifyIcon.Dispose()
-            Write-LogMessage "Balloon notification shown: $Title - $Message"
-        }
-        catch {
-            Write-LogMessage "Failed to show notification: $($_.Exception.Message)"
-        }
-    }
-}
-
-# -------------------------
 # Helper: Validate Extraction Path (Verb-Noun: Test-ExtractionPath)
 # -------------------------
 function Test-ExtractionPath {
@@ -678,10 +611,31 @@ function Get-7ZipPath {
 # Uses modern Windows 10/11 folder picker dialog via COM IFileOpenDialog
 # -------------------------
 function Select-ExtractionPath {
-    param([string]$DefaultPath)
+    param(
+        [string]$DefaultPath,
+        [switch]$OpenToParent  # If set, opens to parent directory of DefaultPath
+    )
     
-    # Add COM type definition for modern folder picker
-    Add-Type -TypeDefinition @"
+    # Determine the folder to open the dialog at
+    $initialFolder = $DefaultPath
+    if ($OpenToParent -and $DefaultPath -and (Test-Path $DefaultPath -ErrorAction SilentlyContinue)) {
+        $parentPath = Split-Path -Parent $DefaultPath
+        if ($parentPath -and (Test-Path $parentPath -ErrorAction SilentlyContinue)) {
+            $initialFolder = $parentPath
+        }
+    }
+    # Also navigate to parent if the specified folder doesn't exist yet
+    elseif ($DefaultPath -and -not (Test-Path $DefaultPath -ErrorAction SilentlyContinue)) {
+        $parentPath = Split-Path -Parent $DefaultPath
+        if ($parentPath -and (Test-Path $parentPath -ErrorAction SilentlyContinue)) {
+            $initialFolder = $parentPath
+        }
+    }
+    
+    # Check if our FolderPicker type already exists to avoid redefining it
+    if (-not ([System.Management.Automation.PSTypeName]'FolderPickerDialog').Type) {
+        # Add COM type definition for modern folder picker
+        Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
 
@@ -727,7 +681,7 @@ public interface IShellItem {
     void Compare();
 }
 
-public static class FolderPicker {
+public static class FolderPickerDialog {
     public const uint FOS_PICKFOLDERS = 0x20;
     public const uint FOS_FORCEFILESYSTEM = 0x40;
     public const uint SIGDN_FILESYSPATH = 0x80058000;
@@ -740,18 +694,18 @@ public static class FolderPicker {
     
     private static readonly Guid IShellItemGuid = new Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE");
     
-    public static string ShowDialog(string title, string defaultPath) {
+    public static string ShowDialog(string title, string initialFolder) {
         var dialog = (IFileOpenDialog)new FileOpenDialogRCW();
         dialog.SetOptions(FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
         dialog.SetTitle(title);
         
-        // Clear dialog's memory of the last folder to ensure we always open at defaultPath
-        dialog.ClearClientData();
+        // Clear dialog's memory of the last folder to ensure we always open at initialFolder
+        try { dialog.ClearClientData(); } catch { }
         
         // Set initial folder if path exists
-        if (!string.IsNullOrEmpty(defaultPath) && System.IO.Directory.Exists(defaultPath)) {
+        if (!string.IsNullOrEmpty(initialFolder) && System.IO.Directory.Exists(initialFolder)) {
             IShellItem folder;
-            if (SHCreateItemFromParsingName(defaultPath, IntPtr.Zero, IShellItemGuid, out folder) == 0) {
+            if (SHCreateItemFromParsingName(initialFolder, IntPtr.Zero, IShellItemGuid, out folder) == 0) {
                 dialog.SetFolder(folder);
             }
         }
@@ -767,10 +721,11 @@ public static class FolderPicker {
         return null;
     }
 }
-"@ -ErrorAction SilentlyContinue
+"@ -ErrorAction Stop
+    }
 
     try {
-        $selectedPath = [FolderPicker]::ShowDialog("Select extraction destination folder", $DefaultPath)
+        $selectedPath = [FolderPickerDialog]::ShowDialog("Select extraction destination folder", $initialFolder)
         if ($selectedPath) {
             Write-LogMessage "User selected extraction path: $selectedPath"
             return $selectedPath
@@ -781,7 +736,8 @@ public static class FolderPicker {
         # Fallback to classic dialog
         $folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog
         $folderBrowser.Description = "Select extraction destination folder"
-        $folderBrowser.SelectedPath = $DefaultPath
+        # For fallback, also use initialFolder (parent) if appropriate
+        $folderBrowser.SelectedPath = $initialFolder
         $folderBrowser.ShowNewFolderButton = $true
         
         if ($folderBrowser.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
@@ -827,7 +783,7 @@ function Show-ExtractionProgress {
     $form.StartPosition = 'CenterScreen'
     $form.FormBorderStyle = 'FixedDialog'
     $form.MaximizeBox = $false
-    $form.MinimizeBox = $false
+    $form.MinimizeBox = $true
     $form.ControlBox = $false
     $form.BackColor = $colors.FormBack
     $form.Font = New-Object System.Drawing.Font("Segoe UI", 10)
@@ -977,7 +933,6 @@ function Expand-ArchiveFile {
                 $progressForm.Dispose()
                 Write-Host "ZIP extracted successfully."
                 Write-LogMessage "ZIP extracted with Expand-Archive."
-                Show-ToastNotification -Title "Extraction Complete" -Message "ZIP extracted to: $DestinationPath" -Type Info
                 return $DestinationPath 
             } 
             catch { 
@@ -1012,7 +967,6 @@ function Expand-ArchiveFile {
                     try { $process.Kill() } catch {}
                     $progressForm.Close()
                     $progressForm.Dispose()
-                    Show-ToastNotification -Title "Extraction Cancelled" -Message "Extraction was cancelled by user." -Type Warning
                     return $null
                 }
                 
@@ -1031,7 +985,6 @@ function Expand-ArchiveFile {
             if ($process.ExitCode -eq 0) { 
                 Write-Host "$($ArchiveType.ToUpper()) extracted successfully with 7-Zip to $DestinationPath"
                 Write-LogMessage "Extracted with 7-Zip successfully."
-                Show-ToastNotification -Title "Extraction Complete" -Message "$($ArchiveType.ToUpper()) extracted to: $DestinationPath" -Type Info
                 return $DestinationPath 
             }
             else {
@@ -1051,7 +1004,6 @@ function Expand-ArchiveFile {
             $errMsg = "No archive extractor found (tried 7-Zip and WinRAR). Cannot extract '${ArchivePath}'. Please install 7-Zip or WinRAR."
             Write-Error $errMsg
             Write-LogMessage "ERROR: $errMsg"
-            Show-ToastNotification -Title "Extraction Failed" -Message "No extractor found. Install 7-Zip or WinRAR." -Type Error
             return $null 
         }
 
@@ -1067,13 +1019,11 @@ function Expand-ArchiveFile {
             $warnMsg = "WinRAR extraction might have failed for '${ArchivePath}'. Exit Code: $($process.ExitCode)."
             Write-Warning $warnMsg
             Write-LogMessage "WARNING: $warnMsg"
-            Show-ToastNotification -Title "Extraction Warning" -Message "WinRAR reported exit code $($process.ExitCode)" -Type Warning
             return $null 
         } 
         else { 
             Write-Host "$($ArchiveType.ToUpper()) extracted successfully with WinRAR to $DestinationPath"
             Write-LogMessage "Extracted with WinRAR successfully."
-            Show-ToastNotification -Title "Extraction Complete" -Message "$($ArchiveType.ToUpper()) extracted to: $DestinationPath" -Type Info
             return $DestinationPath 
         }
     }
@@ -1085,7 +1035,6 @@ function Expand-ArchiveFile {
         $errMsg = "Error during extraction process for '${ArchivePath}'. Error: $($_.Exception.Message)"
         Write-Error $errMsg
         Write-LogMessage "ERROR: $errMsg"
-        Show-ToastNotification -Title "Extraction Error" -Message $_.Exception.Message -Type Error
         return $null 
     }
 }
@@ -1127,7 +1076,7 @@ function Show-ExtractionConfirmForm {
     $form.StartPosition = 'CenterScreen'
     $form.FormBorderStyle = 'FixedDialog'
     $form.MaximizeBox = $false
-    $form.MinimizeBox = $false
+    $form.MinimizeBox = $true
     $form.BackColor = $colors.FormBack
     $form.Font = New-Object System.Drawing.Font("Segoe UI", 10)
     $form.Add_Shown({ Set-FormIcon -Form $this })
@@ -1165,7 +1114,7 @@ function Show-ExtractionConfirmForm {
     $browseButton.Text = "&Browse..."
     Set-ThemedButton -Button $browseButton -Colors $colors
     $browseButton.Add_Click({
-            $selected = Select-ExtractionPath -DefaultPath $destTextBox.Text
+            $selected = Select-ExtractionPath -DefaultPath $destTextBox.Text -OpenToParent
             if ($selected) {
                 $destTextBox.Text = $selected
             }
@@ -1234,11 +1183,11 @@ function Show-SettingsForm {
     
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "Settings - qBitLauncher"
-    $form.Size = New-Object System.Drawing.Size(400, 350)
+    $form.Size = New-Object System.Drawing.Size(400, 300)
     $form.StartPosition = 'CenterScreen'
     $form.FormBorderStyle = 'FixedDialog'
     $form.MaximizeBox = $false
-    $form.MinimizeBox = $false
+    $form.MinimizeBox = $true
     $form.BackColor = $colors.FormBack
     $form.Font = New-Object System.Drawing.Font("Segoe UI", 10)
     $form.Add_Shown({ Set-FormIcon -Form $this })
@@ -1263,19 +1212,9 @@ function Show-SettingsForm {
     $themeCombo.SelectedItem = $Global:UserSettings.Theme
     $form.Controls.Add($themeCombo)
 
-    # Notifications checkbox
-    $notifyCheckbox = New-Object System.Windows.Forms.CheckBox
-    $notifyCheckbox.Location = New-Object System.Drawing.Point(20, 55)
-    $notifyCheckbox.Size = New-Object System.Drawing.Size(330, 25)
-    $notifyCheckbox.Text = "Show toast notifications"
-    $notifyCheckbox.ForeColor = $colors.TextFore
-    $notifyCheckbox.Checked = $Global:UserSettings.ShowNotifications
-    $notifyCheckbox.FlatStyle = 'Flat'
-    $form.Controls.Add($notifyCheckbox)
-
     # Version label
     $versionLabel = New-Object System.Windows.Forms.Label
-    $versionLabel.Location = New-Object System.Drawing.Point(20, 90)
+    $versionLabel.Location = New-Object System.Drawing.Point(20, 55)
     $versionLabel.Size = New-Object System.Drawing.Size(150, 25)
     $versionLabel.Text = "Version: v$($Global:ScriptVersion)"
     $versionLabel.ForeColor = $colors.TextFore
@@ -1283,7 +1222,7 @@ function Show-SettingsForm {
 
     # Check for Updates button
     $updateButton = New-Object System.Windows.Forms.Button
-    $updateButton.Location = New-Object System.Drawing.Point(180, 85)
+    $updateButton.Location = New-Object System.Drawing.Point(180, 50)
     $updateButton.Size = New-Object System.Drawing.Size(170, 30)
     $updateButton.Text = "Check for &Updates"
     Set-ThemedButton -Button $updateButton -Colors $colors
@@ -1308,7 +1247,7 @@ function Show-SettingsForm {
 
     # Info label
     $infoLabel = New-Object System.Windows.Forms.Label
-    $infoLabel.Location = New-Object System.Drawing.Point(20, 125)
+    $infoLabel.Location = New-Object System.Drawing.Point(20, 90)
     $infoLabel.Size = New-Object System.Drawing.Size(340, 35)
     $infoLabel.Text = "Theme changes apply to new windows.`nSettings are saved to config.json"
     $infoLabel.ForeColor = $colors.SecondaryText
@@ -1317,7 +1256,7 @@ function Show-SettingsForm {
 
     # Keyboard shortcuts section
     $shortcutsLabel = New-Object System.Windows.Forms.Label
-    $shortcutsLabel.Location = New-Object System.Drawing.Point(20, 165)
+    $shortcutsLabel.Location = New-Object System.Drawing.Point(20, 130)
     $shortcutsLabel.Size = New-Object System.Drawing.Size(360, 60)
     $shortcutsLabel.Text = "Keyboard Shortcuts (hold Alt key):`nAlt+R: Run   |   Alt+S: Shortcut   |   Alt+O: Open Folder`nAlt+T: Settings   |   Alt+C: Close"
     $shortcutsLabel.ForeColor = $colors.SecondaryText
@@ -1326,12 +1265,11 @@ function Show-SettingsForm {
 
     # Buttons
     $saveButton = New-Object System.Windows.Forms.Button
-    $saveButton.Location = New-Object System.Drawing.Point(160, 250)
+    $saveButton.Location = New-Object System.Drawing.Point(160, 210)
     $saveButton.Size = New-Object System.Drawing.Size(100, 35)
     $saveButton.Text = "&Save"
     $saveButton.Add_Click({
             $Global:UserSettings.Theme = $themeCombo.SelectedItem
-            $Global:UserSettings.ShowNotifications = $notifyCheckbox.Checked
             $Global:ThemeSelection = $Global:UserSettings.Theme
             $Global:CurrentTheme = $Global:Themes[$Global:ThemeSelection]
             if (Save-UserSettings) {
@@ -1342,7 +1280,7 @@ function Show-SettingsForm {
         })
 
     $cancelButton = New-Object System.Windows.Forms.Button
-    $cancelButton.Location = New-Object System.Drawing.Point(270, 250)
+    $cancelButton.Location = New-Object System.Drawing.Point(270, 210)
     $cancelButton.Size = New-Object System.Drawing.Size(100, 35)
     $cancelButton.Text = "&Cancel"
     $cancelButton.Add_Click({
@@ -1368,9 +1306,15 @@ function Show-SettingsForm {
 function Show-ExecutableSelectionForm {
     param(
         [System.Management.Automation.PSObject[]]$FoundExecutables,
-        [string]$WindowTitle = "qBitLauncher Action"
+        [string]$WindowTitle = "qBitLauncher Action",
+        [string]$RootFolder = $null  # Root folder for Open Folder button
     )
     $colors = $Global:CurrentTheme
+    
+    # Determine root folder from first executable if not provided
+    if (-not $RootFolder -and $FoundExecutables -and $FoundExecutables.Count -gt 0) {
+        $RootFolder = $FoundExecutables[0].DirectoryName
+    }
 
     # Expanded form size for split layout
     $form = New-Object System.Windows.Forms.Form
@@ -1379,7 +1323,7 @@ function Show-ExecutableSelectionForm {
     $form.StartPosition = 'CenterScreen'
     $form.FormBorderStyle = 'FixedDialog'
     $form.MaximizeBox = $false
-    $form.MinimizeBox = $false
+    $form.MinimizeBox = $true
     $form.BackColor = $colors.FormBack
     $font = New-Object System.Drawing.Font("Segoe UI", 10)
     $form.Font = $font
@@ -1507,7 +1451,7 @@ function Show-ExecutableSelectionForm {
 
     # F2 key to start rename
     $listView.Add_KeyDown({
-            param($sender, $e)
+            param($eventSender, $e)
             if ($e.KeyCode -eq 'F2' -and $listView.SelectedItems.Count -gt 0) {
                 $listView.SelectedItems[0].BeginEdit()
                 $e.Handled = $true
@@ -1516,9 +1460,9 @@ function Show-ExecutableSelectionForm {
 
     # After inline edit - perform actual file rename
     $listView.Add_AfterLabelEdit({
-            param($sender, $e)
+            param($eventSender, $e)
         
-            if ($e.Label -eq $null -or $e.Label -eq "") {
+            if ($null -eq $e.Label -or $e.Label -eq "") {
                 $e.CancelEdit = $true
                 return
             }
@@ -1616,25 +1560,32 @@ function Show-ExecutableSelectionForm {
     $shortcutButton.Size = New-Object System.Drawing.Size(90, 35)
     $shortcutButton.Text = "&Shortcut"
     $shortcutButton.Add_Click({
-            $exe = & $getSelectedExe
-            if ($exe) {
-                try {
-                    $desktopPath = [System.Environment]::GetFolderPath('Desktop')
-                    $shortcutName = $exe.BaseName + ".lnk"
-                    $shortcutPath = Join-Path $desktopPath $shortcutName
-                    $wshell = New-Object -ComObject WScript.Shell
-                    $shortcut = $wshell.CreateShortcut($shortcutPath)
-                    $shortcut.TargetPath = $exe.FullName
-                    $shortcut.WorkingDirectory = $exe.DirectoryName
-                    $shortcut.Save()
-                    Invoke-ActionSound -Type Success
-                    & $addLogEntry "Shortcut: $shortcutName"
-                }
-                catch {
-                    Invoke-ActionSound -Type Error
-                    & $addLogEntry "Shortcut failed"
-                    Show-ThemedMessageBox -Message "Failed to create shortcut: $($_.Exception.Message)" -Title "Error" -Icon 'Error'
-                }
+            # Check selection first with specific error message
+            if ($listView.SelectedItems.Count -eq 0) {
+                Invoke-ActionSound -Type Error
+                Show-ThemedMessageBox -Message "Please select an executable to create a shortcut for." -Title "No Selection" -Icon 'Warning'
+                return
+            }
+            
+            $exePath = $listView.SelectedItems[0].Tag
+            try {
+                $exe = Get-Item -LiteralPath $exePath -ErrorAction Stop
+                $desktopPath = [System.Environment]::GetFolderPath('Desktop')
+                $shortcutName = $exe.BaseName + ".lnk"
+                $shortcutPath = Join-Path $desktopPath $shortcutName
+                $wshell = New-Object -ComObject WScript.Shell
+                $shortcut = $wshell.CreateShortcut($shortcutPath)
+                $shortcut.TargetPath = $exe.FullName
+                $shortcut.WorkingDirectory = $exe.DirectoryName
+                $shortcut.Save()
+                Invoke-ActionSound -Type Success
+                & $addLogEntry "Shortcut: $shortcutName"
+                Show-ThemedMessageBox -Message "Shortcut created on Desktop:`n$shortcutName" -Title "Success" -Icon 'Information'
+            }
+            catch {
+                Invoke-ActionSound -Type Error
+                & $addLogEntry "Shortcut failed: $($_.Exception.Message)"
+                Show-ThemedMessageBox -Message "Failed to create shortcut: $($_.Exception.Message)" -Title "Error" -Icon 'Error'
             }
         })
     
@@ -1643,10 +1594,21 @@ function Show-ExecutableSelectionForm {
     $exploreButton.Size = New-Object System.Drawing.Size(100, 35)
     $exploreButton.Text = "&Open Folder"
     $exploreButton.Add_Click({
-            $exe = & $getSelectedExe
-            if ($exe) {
-                Start-Process explorer -ArgumentList "`"$($exe.DirectoryName)`""
-                & $addLogEntry "Opened: $($exe.DirectoryName)"
+            # Open selected item's folder if selected, otherwise open root folder
+            if ($listView.SelectedItems.Count -gt 0) {
+                $exePath = $listView.SelectedItems[0].Tag
+                $folderToOpen = [System.IO.Path]::GetDirectoryName($exePath)
+            }
+            else {
+                $folderToOpen = $RootFolder
+            }
+            
+            if ($folderToOpen -and (Test-Path $folderToOpen)) {
+                Start-Process explorer -ArgumentList "`"$folderToOpen`""
+                & $addLogEntry "Opened: $folderToOpen"
+            }
+            else {
+                Show-ThemedMessageBox -Message "Folder not found." -Title "Error" -Icon 'Error'
             }
         })
 
@@ -1809,7 +1771,7 @@ if ($mainFileToProcess) {
                 Write-Host "`nExtraction complete. Searching for executables..."
                 $executablesInArchive = Get-AllExecutables -RootFolderPath $extractedDir
                 if ($executablesInArchive) {
-                    Show-ExecutableSelectionForm -FoundExecutables $executablesInArchive -WindowTitle "qBitLauncher"
+                    Show-ExecutableSelectionForm -FoundExecutables $executablesInArchive -WindowTitle "qBitLauncher" -RootFolder $extractedDir
                 }
                 else {
                     Write-Warning "No executables found in the extracted folder: $extractedDir"
@@ -1826,7 +1788,7 @@ if ($mainFileToProcess) {
         $executables = if ($mainFileToProcess -is [array]) { $mainFileToProcess } else { @($mainFileToProcess) }
         Write-LogMessage "Processing one or more executables."
         
-        Show-ExecutableSelectionForm -FoundExecutables $executables -WindowTitle "qBitLauncher"
+        Show-ExecutableSelectionForm -FoundExecutables $executables -WindowTitle "qBitLauncher" -RootFolder $parentDir
     } 
     elseif ($MediaExtensions -contains $ext) {
         Write-LogMessage "File is a media file."
