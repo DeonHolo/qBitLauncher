@@ -1169,7 +1169,7 @@ function Show-SettingsForm {
 
 
 # ---------------------------------------------------
-# GUI: Main Executable Selection Form (with Icons)
+# GUI: Main Executable Selection Form (with Icons, Log Panel, Rename)
 # ---------------------------------------------------
 function Show-ExecutableSelectionForm {
     param(
@@ -1178,9 +1178,10 @@ function Show-ExecutableSelectionForm {
     )
     $colors = $Global:CurrentTheme
 
+    # Expanded form size for split layout
     $form = New-Object System.Windows.Forms.Form
     $form.Text = $WindowTitle
-    $form.Size = New-Object System.Drawing.Size(750, 450)
+    $form.Size = New-Object System.Drawing.Size(950, 520)
     $form.StartPosition = 'CenterScreen'
     $form.FormBorderStyle = 'FixedDialog'
     $form.MaximizeBox = $false
@@ -1192,20 +1193,19 @@ function Show-ExecutableSelectionForm {
 
     $label = New-Object System.Windows.Forms.Label
     $label.Location = New-Object System.Drawing.Point(10, 10)
-    $label.Size = New-Object System.Drawing.Size(710, 25)
-    $label.Text = "Please select an executable and choose an action."
+    $label.Size = New-Object System.Drawing.Size(600, 25)
+    $label.Text = "Select an executable. Double-click or F2 to rename."
     $label.ForeColor = $colors.TextFore
     $form.Controls.Add($label)
 
-    # Create ImageList for icons
+    # === LEFT SIDE: Executable ListView ===
     $imageList = New-Object System.Windows.Forms.ImageList
     $imageList.ImageSize = New-Object System.Drawing.Size(24, 24)
     $imageList.ColorDepth = 'Depth32Bit'
 
-    # Create ListView instead of ListBox
     $listView = New-Object System.Windows.Forms.ListView
     $listView.Location = New-Object System.Drawing.Point(10, 40)
-    $listView.Size = New-Object System.Drawing.Size(710, 300)
+    $listView.Size = New-Object System.Drawing.Size(620, 370)
     $listView.View = [System.Windows.Forms.View]::Details
     $listView.FullRowSelect = $true
     $listView.MultiSelect = $false
@@ -1214,28 +1214,71 @@ function Show-ExecutableSelectionForm {
     $listView.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
     $listView.Font = $font
     $listView.SmallImageList = $imageList
-    $listView.HeaderStyle = 'None'
+    $listView.LabelEdit = $true  # Enable inline editing for rename
+    $listView.HeaderStyle = 'None'  # Hide column headers for cleaner look
     
-    # Add column for the path (dynamic width)
-    $column = New-Object System.Windows.Forms.ColumnHeader
-    $column.Width = $listView.ClientSize.Width - 5
-    [void]$listView.Columns.Add($column)
-    
-    # Add executables with icons
+    # Two columns: Name (first, editable) and Folder Path (second, info only)
+    $colName = New-Object System.Windows.Forms.ColumnHeader
+    $colName.Text = "Name"
+    $colName.Width = 180
+    $colPath = New-Object System.Windows.Forms.ColumnHeader
+    $colPath.Text = "Folder"
+    $colPath.Width = 420
+    [void]$listView.Columns.Add($colName)
+    [void]$listView.Columns.Add($colPath)
+
+    $form.Controls.Add($listView)
+
+    # === RIGHT SIDE: Activity Log Panel ===
+    $logLabel = New-Object System.Windows.Forms.Label
+    $logLabel.Location = New-Object System.Drawing.Point(645, 40)
+    $logLabel.Size = New-Object System.Drawing.Size(280, 20)
+    $logLabel.Text = "Activity Log"
+    $logLabel.ForeColor = $colors.TextFore
+    $logLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $form.Controls.Add($logLabel)
+
+    $logBox = New-Object System.Windows.Forms.TextBox
+    $logBox.Location = New-Object System.Drawing.Point(645, 65)
+    $logBox.Size = New-Object System.Drawing.Size(280, 345)
+    $logBox.Multiline = $true
+    $logBox.ReadOnly = $true
+    $logBox.ScrollBars = 'Vertical'
+    $logBox.BackColor = $colors.ControlBack
+    $logBox.ForeColor = $colors.SecondaryText
+    $logBox.BorderStyle = 'FixedSingle'
+    $logBox.Font = New-Object System.Drawing.Font("Consolas", 9)
+    $form.Controls.Add($logBox)
+
+    # Helper to add log entries
+    $addLogEntry = {
+        param([string]$Message)
+        $timestamp = Get-Date -Format "h:mm tt"
+        $entry = "[$timestamp] $Message`r`n"
+        $logBox.AppendText($entry)
+        Write-LogMessage $Message
+    }
+
+    # Log form open
+    & $addLogEntry "Form opened"
+
+    # Add executables with icons (two columns)
     $iconIndex = 0
     foreach ($exe in $FoundExecutables) {
         if ($exe -and $exe.FullName) {
-            # Extract icon
             $icon = Get-ExecutableIcon -ExePath $exe.FullName
+            $folderPath = $exe.DirectoryName
+            $fileName = $exe.Name
+            
             if ($icon) {
                 $imageList.Images.Add($icon)
-                $item = New-Object System.Windows.Forms.ListViewItem($exe.FullName, $iconIndex)
+                $item = New-Object System.Windows.Forms.ListViewItem($fileName, $iconIndex)
                 $iconIndex++
             }
             else {
-                # Use default icon index -1 (no icon)
-                $item = New-Object System.Windows.Forms.ListViewItem($exe.FullName)
+                $item = New-Object System.Windows.Forms.ListViewItem($fileName)
             }
+            $item.SubItems.Add($folderPath) | Out-Null
             $item.Tag = $exe.FullName
             [void]$listView.Items.Add($item)
         }
@@ -1243,12 +1286,97 @@ function Show-ExecutableSelectionForm {
     
     if ($listView.Items.Count -gt 0) {
         $listView.Items[0].Selected = $true
+        & $addLogEntry "Found $($listView.Items.Count) executable(s)"
     }
 
-    $form.Controls.Add($listView)
+    # === Context Menu for Right-Click ===
+    $contextMenu = New-Object System.Windows.Forms.ContextMenuStrip
+    $renameMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
+    $renameMenuItem.Text = "Rename"
+    $renameMenuItem.Add_Click({
+            if ($listView.SelectedItems.Count -gt 0) {
+                $listView.SelectedItems[0].BeginEdit()
+            }
+        })
+    $contextMenu.Items.Add($renameMenuItem) | Out-Null
+    $listView.ContextMenuStrip = $contextMenu
 
-    # Track last action for return value
-    $script:lastAction = 'None'
+    # === Event Handlers ===
+    # (No selection logging - it was redundant)
+
+    # Double-click to start rename
+    $listView.Add_DoubleClick({
+            if ($listView.SelectedItems.Count -gt 0) {
+                $listView.SelectedItems[0].BeginEdit()
+            }
+        })
+
+    # F2 key to start rename
+    $listView.Add_KeyDown({
+            param($sender, $e)
+            if ($e.KeyCode -eq 'F2' -and $listView.SelectedItems.Count -gt 0) {
+                $listView.SelectedItems[0].BeginEdit()
+                $e.Handled = $true
+            }
+        })
+
+    # After inline edit - perform actual file rename
+    $listView.Add_AfterLabelEdit({
+            param($sender, $e)
+        
+            if ($e.Label -eq $null -or $e.Label -eq "") {
+                $e.CancelEdit = $true
+                return
+            }
+        
+            $item = $listView.Items[$e.Item]
+            $oldPath = $item.Tag
+            $oldName = [System.IO.Path]::GetFileName($oldPath)
+            $newName = $e.Label
+        
+            # Validate new name
+            $invalidChars = [System.IO.Path]::GetInvalidFileNameChars()
+            foreach ($char in $invalidChars) {
+                if ($newName.Contains($char)) {
+                    [System.Windows.Forms.MessageBox]::Show("Invalid character in filename: $char", "Rename Error", 'OK', 'Error')
+                    $e.CancelEdit = $true
+                    return
+                }
+            }
+        
+            # Ensure .exe extension
+            if (-not $newName.EndsWith(".exe", [StringComparison]::OrdinalIgnoreCase)) {
+                $newName = $newName + ".exe"
+            }
+        
+            if ($newName -eq $oldName) {
+                $e.CancelEdit = $true
+                return
+            }
+        
+            $directory = [System.IO.Path]::GetDirectoryName($oldPath)
+            $newPath = Join-Path $directory $newName
+        
+            # Check if target exists
+            if (Test-Path $newPath) {
+                [System.Windows.Forms.MessageBox]::Show("A file with that name already exists.", "Rename Error", 'OK', 'Error')
+                $e.CancelEdit = $true
+                return
+            }
+        
+            try {
+                Rename-Item -LiteralPath $oldPath -NewName $newName -ErrorAction Stop
+                $item.Tag = $newPath
+                # Note: First column (Name) is automatically updated by LabelEdit
+                Play-ActionSound -Type Success
+                & $addLogEntry "Renamed: $oldName -> $newName"
+            }
+            catch {
+                [System.Windows.Forms.MessageBox]::Show("Failed to rename: $($_.Exception.Message)", "Rename Error", 'OK', 'Error')
+                $e.CancelEdit = $true
+                & $addLogEntry "Rename failed: $oldName"
+            }
+        })
 
     # Helper to get selected executable
     $getSelectedExe = {
@@ -1266,9 +1394,11 @@ function Show-ExecutableSelectionForm {
         }
     }
 
-    # Button row - Main actions (no DialogResult - form stays open)
+    # === Button Row ===
+    $buttonY = 425
+    
     $runButton = New-Object System.Windows.Forms.Button
-    $runButton.Location = New-Object System.Drawing.Point(10, 355)
+    $runButton.Location = New-Object System.Drawing.Point(10, $buttonY)
     $runButton.Size = New-Object System.Drawing.Size(80, 35)
     $runButton.Text = "&Run"
     $runButton.Add_Click({
@@ -1277,20 +1407,19 @@ function Show-ExecutableSelectionForm {
                 try {
                     Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -Verb RunAs
                     Play-ActionSound -Type Success
-                    Show-ToastNotification -Title "Launched" -Message "$($exe.Name)" -Type Info
-                    Write-LogMessage "Launched: $($exe.FullName)"
-                    [System.Windows.Forms.MessageBox]::Show("Launched: $($exe.Name)", "Application Started", 'OK', 'Information')
+                    & $addLogEntry "Launched: $($exe.Name)"
                 }
                 catch {
                     Play-ActionSound -Type Error
+                    & $addLogEntry "Launch failed: $($exe.Name)"
                     [System.Windows.Forms.MessageBox]::Show("Failed to launch: $($_.Exception.Message)", "Error", 'OK', 'Error')
                 }
             }
         })
     
     $shortcutButton = New-Object System.Windows.Forms.Button
-    $shortcutButton.Location = New-Object System.Drawing.Point(95, 355)
-    $shortcutButton.Size = New-Object System.Drawing.Size(100, 35)
+    $shortcutButton.Location = New-Object System.Drawing.Point(95, $buttonY)
+    $shortcutButton.Size = New-Object System.Drawing.Size(90, 35)
     $shortcutButton.Text = "&Shortcut"
     $shortcutButton.Add_Click({
             $exe = & $getSelectedExe
@@ -1305,40 +1434,46 @@ function Show-ExecutableSelectionForm {
                     $shortcut.WorkingDirectory = $exe.DirectoryName
                     $shortcut.Save()
                     Play-ActionSound -Type Success
-                    Show-ToastNotification -Title "Shortcut Created" -Message "$shortcutName on Desktop" -Type Info
-                    Write-LogMessage "Shortcut created: $shortcutPath"
-                    [System.Windows.Forms.MessageBox]::Show("Shortcut created on Desktop:`n$shortcutName", "Shortcut Created", 'OK', 'Information')
+                    & $addLogEntry "Shortcut: $shortcutName"
                 }
                 catch {
                     Play-ActionSound -Type Error
+                    & $addLogEntry "Shortcut failed"
                     [System.Windows.Forms.MessageBox]::Show("Failed to create shortcut: $($_.Exception.Message)", "Error", 'OK', 'Error')
                 }
             }
         })
     
     $exploreButton = New-Object System.Windows.Forms.Button
-    $exploreButton.Location = New-Object System.Drawing.Point(200, 355)
+    $exploreButton.Location = New-Object System.Drawing.Point(190, $buttonY)
     $exploreButton.Size = New-Object System.Drawing.Size(100, 35)
     $exploreButton.Text = "&Open Folder"
     $exploreButton.Add_Click({
             $exe = & $getSelectedExe
             if ($exe) {
                 Start-Process explorer -ArgumentList "`"$($exe.DirectoryName)`""
-                Play-ActionSound -Type Success
-                Write-LogMessage "Opened folder: $($exe.DirectoryName)"
-                [System.Windows.Forms.MessageBox]::Show("Folder opened in Explorer.", "Folder Opened", 'OK', 'Information')
+                & $addLogEntry "Opened: $($exe.DirectoryName)"
             }
         })
 
-    # Settings button
+    $renameButton = New-Object System.Windows.Forms.Button
+    $renameButton.Location = New-Object System.Drawing.Point(295, $buttonY)
+    $renameButton.Size = New-Object System.Drawing.Size(90, 35)
+    $renameButton.Text = "Re&name"
+    $renameButton.Add_Click({
+            if ($listView.SelectedItems.Count -gt 0) {
+                $listView.SelectedItems[0].BeginEdit()
+            }
+        })
+
     $settingsButton = New-Object System.Windows.Forms.Button
-    $settingsButton.Location = New-Object System.Drawing.Point(305, 355)
-    $settingsButton.Size = New-Object System.Drawing.Size(100, 35)
+    $settingsButton.Location = New-Object System.Drawing.Point(390, $buttonY)
+    $settingsButton.Size = New-Object System.Drawing.Size(90, 35)
     $settingsButton.Text = "Se&ttings"
     $settingsButton.Add_Click({
             $oldTheme = $Global:ThemeSelection
             Show-SettingsForm
-            
+        
             # If theme changed, refresh this form's colors
             if ($Global:ThemeSelection -ne $oldTheme) {
                 $newColors = $Global:CurrentTheme
@@ -1346,8 +1481,10 @@ function Show-ExecutableSelectionForm {
                 $label.ForeColor = $newColors.TextFore
                 $listView.BackColor = $newColors.ControlBack
                 $listView.ForeColor = $newColors.TextFore
-                
-                # Refresh all buttons
+                $logLabel.ForeColor = $newColors.TextFore
+                $logBox.BackColor = $newColors.ControlBack
+                $logBox.ForeColor = $newColors.SecondaryText
+            
                 foreach ($ctrl in $form.Controls) {
                     if ($ctrl -is [System.Windows.Forms.Button]) {
                         $ctrl.BackColor = $newColors.ButtonBack
@@ -1356,18 +1493,19 @@ function Show-ExecutableSelectionForm {
                     }
                 }
                 $form.Refresh()
+                & $addLogEntry "Theme changed"
             }
         })
     
     $closeButton = New-Object System.Windows.Forms.Button
-    $closeButton.Location = New-Object System.Drawing.Point(620, 355)
-    $closeButton.Size = New-Object System.Drawing.Size(100, 35)
+    $closeButton.Location = New-Object System.Drawing.Point(835, $buttonY)
+    $closeButton.Size = New-Object System.Drawing.Size(90, 35)
     $closeButton.Text = "&Close"
     $closeButton.Add_Click({
             $form.Close()
         })
 
-    foreach ($button in @($runButton, $shortcutButton, $exploreButton, $settingsButton, $closeButton)) {
+    foreach ($button in @($runButton, $shortcutButton, $exploreButton, $renameButton, $settingsButton, $closeButton)) {
         Set-ThemedButton -Button $button -Colors $colors
         $form.Controls.Add($button)
     }
