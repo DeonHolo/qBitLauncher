@@ -1487,23 +1487,36 @@ function Show-ExecutableSelectionForm {
                 $newName = $newName + ".exe"
             }
         
-            if ($newName -eq $oldName) {
+            # Use case-SENSITIVE comparison to allow case-only renames (e.g., "dogpile" -> "Dogpile")
+            if ($newName -ceq $oldName) {
                 $e.CancelEdit = $true
                 return
             }
         
             $directory = [System.IO.Path]::GetDirectoryName($oldPath)
             $newPath = Join-Path $directory $newName
+            
+            # Check if this is a case-only rename (same name, different case)
+            $isCaseOnlyRename = $newName -ieq $oldName
         
-            # Check if target exists
-            if (Test-Path $newPath) {
+            # Check if target exists (but skip this check for case-only renames on case-insensitive NTFS)
+            if (-not $isCaseOnlyRename -and (Test-Path $newPath)) {
                 Show-ThemedMessageBox -Message "A file with that name already exists." -Title "Rename Error" -Icon 'Error'
                 $e.CancelEdit = $true
                 return
             }
         
             try {
-                Rename-Item -LiteralPath $oldPath -NewName $newName -ErrorAction Stop
+                if ($isCaseOnlyRename) {
+                    # For case-only renames, use a two-step process via temp name
+                    $tempName = [System.IO.Path]::GetRandomFileName() + ".exe"
+                    Rename-Item -LiteralPath $oldPath -NewName $tempName -ErrorAction Stop
+                    $tempPath = Join-Path $directory $tempName
+                    Rename-Item -LiteralPath $tempPath -NewName $newName -ErrorAction Stop
+                }
+                else {
+                    Rename-Item -LiteralPath $oldPath -NewName $newName -ErrorAction Stop
+                }
                 $item.Tag = $newPath
                 # Note: First column (Name) is automatically updated by LabelEdit
                 Invoke-ActionSound -Type Success
