@@ -784,7 +784,7 @@ function Show-ExtractionProgress {
     $form.FormBorderStyle = 'FixedDialog'
     $form.MaximizeBox = $false
     $form.MinimizeBox = $true
-    $form.ControlBox = $false
+    $form.ControlBox = $true
     $form.BackColor = $colors.FormBack
     $form.Font = New-Object System.Drawing.Font("Segoe UI", 10)
     $form.TopMost = $true
