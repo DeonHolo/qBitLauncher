@@ -4,7 +4,7 @@
 
 # qBitLauncher
 
-A PowerShell post-download handler for qBittorrent that automatically extracts archives and launches executables with a clean GUI.
+A PowerShell post-download handler for qBittorrent with a themed GUI for extracting archives and managing executables.
 
 ![PowerShell](https://img.shields.io/badge/PowerShell-5.1+-blue?logo=powershell)
 ![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D6?logo=windows)
@@ -20,7 +20,7 @@ A PowerShell post-download handler for qBittorrent that automatically extracts a
 - 📋 **Activity Log** - Real-time log panel showing all actions
 - 🎨 **Themed GUI** - Dracula dark theme with Light mode option
 - 🛡️ **Run as Administrator** - One-click UAC elevation for installers
-- 🔔 **Toast notifications** - Windows notifications for all actions
+- 🔔 **Action feedback** - Themed dialogs and sound effects for all actions
 - 📦 **Auto-update** - Checks for updates on startup
 
 ## Requirements

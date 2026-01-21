@@ -959,6 +959,9 @@ function Expand-ArchiveFile {
             
             $process = [System.Diagnostics.Process]::Start($psi)
             
+            # Track last progress to prevent erratic jumps
+            $lastPercent = 0
+            
             # Read output and update progress
             while (-not $process.HasExited) {
                 # Check for cancellation
@@ -971,9 +974,14 @@ function Expand-ArchiveFile {
                 }
                 
                 $line = $process.StandardOutput.ReadLine()
-                if ($line -match '(\d+)%') {
+                # 7-Zip progress lines start with whitespace and percentage like "  45%"
+                if ($line -match '^\s*(\d+)%') {
                     $percent = [int]$Matches[1]
-                    Update-ProgressForm -Form $progressForm -Percentage $percent -Status "$percent% complete"
+                    # Only update if progress increased (prevents jumps back from file-level percentages)
+                    if ($percent -ge $lastPercent) {
+                        $lastPercent = $percent
+                        Update-ProgressForm -Form $progressForm -Percentage $percent -Status "$percent% complete"
+                    }
                 }
                 [System.Windows.Forms.Application]::DoEvents()
             }
@@ -1438,6 +1446,90 @@ function Show-ExecutableSelectionForm {
         })
     $contextMenu.Items.Add($renameMenuItem) | Out-Null
     $listView.ContextMenuStrip = $contextMenu
+
+    # === Custom Column Resizing with Visible Divider ===
+    # Permanently disable horizontal scrollbar using ListView style
+    Add-Type -Name ListViewStyleHelper -Namespace Win32 -MemberDefinition '
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+        public const int GWL_STYLE = -16;
+        public const int LVS_NOHSCROLL = 0x8000;
+    ' -ErrorAction SilentlyContinue
+    
+    # Add LVS_NOHSCROLL style to permanently remove horizontal scrollbar
+    $currentStyle = [Win32.ListViewStyleHelper]::GetWindowLong($listView.Handle, [Win32.ListViewStyleHelper]::GWL_STYLE)
+    [Win32.ListViewStyleHelper]::SetWindowLong($listView.Handle, [Win32.ListViewStyleHelper]::GWL_STYLE, $currentStyle -bor [Win32.ListViewStyleHelper]::LVS_NOHSCROLL) | Out-Null
+    
+    # Set column widths - use very conservative sizing
+    $usableWidth = $listView.ClientSize.Width - 20  # Large buffer to be safe
+    $initialNameWidth = [math]::Floor($usableWidth / 2)
+    $listView.Columns[0].Width = $initialNameWidth
+    $listView.Columns[1].Width = $usableWidth - $initialNameWidth
+    
+    # Create visible divider line (simple solid line)
+    $dividerPanel = New-Object System.Windows.Forms.Panel
+    $dividerPanel.Size = New-Object System.Drawing.Size(2, $listView.Height)
+    $dividerPanel.Location = New-Object System.Drawing.Point(($listView.Left + $initialNameWidth), $listView.Top)
+    $dividerPanel.BackColor = $colors.Border
+    $dividerPanel.Cursor = [System.Windows.Forms.Cursors]::VSplit
+    $form.Controls.Add($dividerPanel)
+    $dividerPanel.BringToFront()
+    
+    # State tracking for drag operation
+    $resizeState = @{
+        Active     = $false
+        StartX     = 0
+        StartWidth = 0
+    }
+    
+    # Drag limits
+    $minWidth = 80
+    $maxWidth = $usableWidth - 80
+    
+    # Update divider position
+    $updateDivider = {
+        $dividerPanel.Left = $listView.Left + $listView.Columns[0].Width - 1
+    }
+    
+    # Mouse events on the divider panel for dragging
+    $dividerPanel.Add_MouseDown({
+            param($eventSender, $e)
+            if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
+                $resizeState.Active = $true
+                $resizeState.StartX = [System.Windows.Forms.Cursor]::Position.X
+                $resizeState.StartWidth = $listView.Columns[0].Width
+                $dividerPanel.Capture = $true
+                $listView.SuspendLayout()  # Prevent flicker
+            }
+        }.GetNewClosure())
+    
+    $dividerPanel.Add_MouseMove({
+            param($eventSender, $e)
+            if ($resizeState.Active) {
+                $currentX = [System.Windows.Forms.Cursor]::Position.X
+                $delta = $currentX - $resizeState.StartX
+                $newWidth = $resizeState.StartWidth + $delta
+            
+                # Apply limits
+                if ($newWidth -lt $minWidth) { $newWidth = $minWidth }
+                if ($newWidth -gt $maxWidth) { $newWidth = $maxWidth }
+            
+                $listView.Columns[0].Width = $newWidth
+                $listView.Columns[1].Width = $usableWidth - $newWidth
+                & $updateDivider
+            }
+        }.GetNewClosure())
+    
+    $dividerPanel.Add_MouseUp({
+            param($eventSender, $e)
+            if ($resizeState.Active) {
+                $resizeState.Active = $false
+                $dividerPanel.Capture = $false
+                $listView.ResumeLayout()  # Resume layout after drag
+            }
+        }.GetNewClosure())
 
     # === Event Handlers ===
     # (No selection logging - it was redundant)
