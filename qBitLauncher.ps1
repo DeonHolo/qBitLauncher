@@ -1,4 +1,4 @@
-﻿# qBitLauncher_v3.ps1
+﻿﻿# qBitLauncher_v3.ps1
 
 param(
     [string]$filePathFromQB 
@@ -41,7 +41,7 @@ public const int ICON_BIG = 1;
 # Configuration
 # -------------------------
 # Version and update settings
-$Global:ScriptVersion = "1.6.0"
+$Global:ScriptVersion = "1.7.0"
 $Global:GitHubRawUrl = "https://raw.githubusercontent.com/DeonHolo/qBitLauncher/main/qBitLauncher.ps1"
 $Global:GitHubCommitsUrl = "https://github.com/DeonHolo/qBitLauncher/commits/main"
 
@@ -789,6 +789,8 @@ function Show-ExtractionProgress {
     $form.Font = New-Object System.Drawing.Font("Segoe UI", 10)
     $form.TopMost = $true
     $form.Add_Shown({ Set-FormIcon -Form $this })
+    # Minimize when the form loses focus (user clicks elsewhere)
+    $form.Add_Deactivate({ $this.WindowState = 'Minimized' })
     
     $label = New-Object System.Windows.Forms.Label
     $label.Location = New-Object System.Drawing.Point(20, 15)
