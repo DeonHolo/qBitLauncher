@@ -1,4 +1,4 @@
-﻿﻿# qBitLauncher_v3.ps1
+# qBitLauncher.ps1
 
 param(
     [string]$filePathFromQB 
@@ -270,9 +270,14 @@ $Global:CurrentTheme = $Global:Themes[$Global:ThemeSelection]
 # -------------------------
 function Write-LogMessage {
     param([string]$Message)
-    $Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $Timestamp = Get-Date -Format "yyyy-MM-dd hh:mm tt"
     $LogEntry = "$Timestamp - $Message"
-    try { Add-Content -Path $LogFile -Value $LogEntry -ErrorAction Stop }
+    try {
+        # Prepend new entries to top of log file (newest first)
+        $existingContent = if (Test-Path $LogFile) { Get-Content $LogFile -Raw -ErrorAction SilentlyContinue } else { "" }
+        $newContent = "$LogEntry`r`n$existingContent"
+        [System.IO.File]::WriteAllText($LogFile, $newContent)
+    }
     catch {
         $FallbackLogDir = Join-Path $env:PUBLIC "Documents"; $FallbackLogFile = Join-Path $FallbackLogDir "qBitLauncher_fallback_log.txt"
         try { if (-not (Test-Path $FallbackLogDir)) { New-Item -ItemType Directory -Path $FallbackLogDir -Force -ErrorAction SilentlyContinue | Out-Null }; Add-Content -Path $FallbackLogFile -Value "$Timestamp - FALLBACK: $Message (Original log failed: $($_.Exception.Message))" -ErrorAction SilentlyContinue } catch {}
