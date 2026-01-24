@@ -1,4 +1,4 @@
-# qBitLauncher.ps1
+﻿# qBitLauncher.ps1
 
 param(
     [string]$filePathFromQB 
@@ -1599,7 +1599,7 @@ function Show-ExecutableSelectionForm {
             $isCaseOnlyRename = $newName -ieq $oldName
         
             # Check if target exists (but skip this check for case-only renames on case-insensitive NTFS)
-            if (-not $isCaseOnlyRename -and (Test-Path $newPath)) {
+            if (-not $isCaseOnlyRename -and (Test-Path -LiteralPath $newPath)) {
                 Show-ThemedMessageBox -Message "A file with that name already exists." -Title "Rename Error" -Icon 'Error'
                 $e.CancelEdit = $true
                 return
@@ -1655,13 +1655,15 @@ function Show-ExecutableSelectionForm {
             $exe = & $getSelectedExe
             if ($exe) {
                 try {
-                    Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -Verb RunAs
+                    # Don't force RunAs - let the executable request elevation if needed
+                    # This avoids issues with UAC cancellation and security software blocking
+                    Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName
                     Invoke-ActionSound -Type Success
                     & $addLogEntry "Launched: $($exe.Name)"
                 }
                 catch {
                     Invoke-ActionSound -Type Error
-                    & $addLogEntry "Launch failed: $($exe.Name)"
+                    & $addLogEntry "Launch failed: $($exe.Name) - $($_.Exception.Message)"
                     Show-ThemedMessageBox -Message "Failed to launch: $($_.Exception.Message)" -Title "Error" -Icon 'Error'
                 }
             }
@@ -1715,7 +1717,8 @@ function Show-ExecutableSelectionForm {
                 $folderToOpen = $RootFolder
             }
             
-            if ($folderToOpen -and (Test-Path $folderToOpen)) {
+            # Use -LiteralPath to handle paths with special characters like brackets []
+            if ($folderToOpen -and (Test-Path -LiteralPath $folderToOpen)) {
                 Start-Process explorer -ArgumentList "`"$folderToOpen`""
                 & $addLogEntry "Opened: $folderToOpen"
             }
