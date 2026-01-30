@@ -1,0 +1,25 @@
+Windows Registry Editor Version 5.00
+
+; =====================================================
+; Remove qBitLauncher Context Menu Integration
+; =====================================================
+; This will remove all context menu entries added by Add-ContextMenu.reg
+; =====================================================
+
+; --- FOLDERS ---
+[-HKEY_CLASSES_ROOT\Directory\shell\qBitLauncher]
+
+; --- ZIP FILES ---
+[-HKEY_CLASSES_ROOT\SystemFileAssociations\.zip\shell\qBitLauncher]
+
+; --- RAR FILES ---
+[-HKEY_CLASSES_ROOT\SystemFileAssociations\.rar\shell\qBitLauncher]
+
+; --- 7Z FILES ---
+[-HKEY_CLASSES_ROOT\SystemFileAssociations\.7z\shell\qBitLauncher]
+
+; --- ISO FILES ---
+[-HKEY_CLASSES_ROOT\SystemFileAssociations\.iso\shell\qBitLauncher]
+
+; --- IMG FILES ---
+[-HKEY_CLASSES_ROOT\SystemFileAssociations\.img\shell\qBitLauncher]

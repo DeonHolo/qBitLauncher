@@ -48,6 +48,23 @@ git clone https://github.com/DeonHolo/qBitLauncher.git
    ```
 > **Note:** Replace `C:\path\to\qBitLauncher.ps1` with the actual path where you saved the script.
 
+### Context Menu Integration (Optional)
+
+Add "Open with qBitLauncher" to your **Shift+Right-click** context menu for folders and archive files.
+
+**Install:**
+1. Edit `Add-ContextMenu.reg` and verify the script path is correct
+2. Double-click `Add-ContextMenu.reg` → Click **Yes** to confirm
+
+**Uninstall:**
+- Double-click `Remove-ContextMenu.reg` to remove all context menu entries
+
+**Supported locations:**
+- Folders
+- Archive files: `.zip`, `.rar`, `.7z`, `.iso`, `.img`
+
+> **Note:** The menu item only appears with **Shift+Right-click** to keep your regular context menu clean.
+
 ## Usage
 
 When a torrent completes:
@@ -81,6 +98,7 @@ Edit via **Settings** button or `config.json`:
 
 | Type | Extensions |
 |------|------------|
+| Runnables | `exe`, `bat`, `cmd` |
 | Archives | `iso`, `zip`, `rar`, `7z`, `img` |
 | Media | `mp4`, `mkv`, `avi`, `mov`, `wmv`, `flv`, `webm`, `mp3`, `flac`, `wav`, `aac`, `ogg`, `m4a` |
 

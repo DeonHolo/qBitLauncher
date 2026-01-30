@@ -898,6 +898,7 @@ function Update-ProgressForm {
 
 # -------------------------
 # Helper: Extract Archive (Verb-Noun: Expand-ArchiveFile)
+# Uses async I/O to keep GUI responsive during large file extractions
 # -------------------------
 function Expand-ArchiveFile {
     param(
@@ -926,13 +927,12 @@ function Expand-ArchiveFile {
 
     # Show progress window
     $progressForm = Show-ExtractionProgress -ArchiveName $archiveName
-    $progressForm.Show()
-    [System.Windows.Forms.Application]::DoEvents()
 
     try {
         # Try native PowerShell for ZIP first
         if ($ArchiveType -eq 'zip') {
             try { 
+                $progressForm.Show()
                 Update-ProgressForm -Form $progressForm -Status "Using native PowerShell..."
                 Write-Host "Using native PowerShell to extract ZIP..."
                 Expand-Archive -LiteralPath $ArchivePath -DestinationPath $DestinationPath -Force -ErrorAction Stop
@@ -951,7 +951,6 @@ function Expand-ArchiveFile {
         # Try 7-Zip first (more common and handles more formats)
         $sevenZip = Get-7ZipPath
         if ($sevenZip) {
-            Update-ProgressForm -Form $progressForm -Status "Extracting with 7-Zip..."
             Write-Host "Extracting with 7-Zip..."
             
             # Use -bsp1 for progress output
@@ -964,74 +963,173 @@ function Expand-ArchiveFile {
             $psi.RedirectStandardOutput = $true
             $psi.CreateNoWindow = $true
             
-            $process = [System.Diagnostics.Process]::Start($psi)
+            $process = New-Object System.Diagnostics.Process
+            $process.StartInfo = $psi
+            $process.EnableRaisingEvents = $true
             
-            # Track last progress to prevent erratic jumps
-            $lastPercent = 0
+            # Thread-safe buffer for async output (using synchronized ArrayList)
+            $outputBuffer = [System.Collections.ArrayList]::Synchronized([System.Collections.ArrayList]::new())
             
-            # Read output and update progress
-            while (-not $process.HasExited) {
-                # Check for cancellation
-                if ($progressForm.Tag.Cancelled) {
-                    Write-LogMessage "User cancelled extraction."
-                    try { $process.Kill() } catch {}
-                    $progressForm.Close()
-                    $progressForm.Dispose()
-                    return $null
-                }
-                
-                $line = $process.StandardOutput.ReadLine()
-                # 7-Zip progress lines start with whitespace and percentage like "  45%"
-                if ($line -match '^\s*(\d+)%') {
-                    $percent = [int]$Matches[1]
-                    # Only update if progress increased (prevents jumps back from file-level percentages)
-                    if ($percent -ge $lastPercent) {
-                        $lastPercent = $percent
-                        Update-ProgressForm -Form $progressForm -Percentage $percent -Status "$percent% complete"
-                    }
-                }
-                [System.Windows.Forms.Application]::DoEvents()
+            # Track last progress and extraction result
+            $extractionState = @{
+                LastPercent = 0
+                ExitCode    = -1
+                Completed   = $false
             }
-            $process.WaitForExit()
             
-            $progressForm.Close()
+            # Register async output handler
+            $outputAction = {
+                param($eventSender, $e)
+                if ($null -ne $e.Data) {
+                    [void]$Event.MessageData.Add($e.Data)
+                }
+            }
+            $outputEvent = Register-ObjectEvent -InputObject $process -EventName OutputDataReceived -Action $outputAction -MessageData $outputBuffer
+            
+            # Start process and begin async reading
+            $process.Start() | Out-Null
+            $process.BeginOutputReadLine()
+            
+            # Create timer to poll process and update UI (non-blocking)
+            $monitorTimer = New-Object System.Windows.Forms.Timer
+            $monitorTimer.Interval = 100  # Check every 100ms
+            
+            $monitorTimer.Add_Tick({
+                    # Process any buffered output lines
+                    while ($outputBuffer.Count -gt 0) {
+                        $line = $null
+                        try {
+                            $line = $outputBuffer[0]
+                            $outputBuffer.RemoveAt(0)
+                        }
+                        catch { }
+                    
+                        if ($line -and $line -match '^\s*(\d+)%') {
+                            $percent = [int]$Matches[1]
+                            # Only update if progress increased (prevents jumps back)
+                            if ($percent -ge $extractionState.LastPercent) {
+                                $extractionState.LastPercent = $percent
+                                Update-ProgressForm -Form $progressForm -Percentage $percent -Status "$percent% complete"
+                            }
+                        }
+                    }
+                
+                    # Check for cancellation
+                    if ($progressForm.Tag.Cancelled) {
+                        Write-LogMessage "User cancelled extraction."
+                        try { $process.Kill() } catch {}
+                        $monitorTimer.Stop()
+                        $extractionState.Completed = $true
+                        $extractionState.ExitCode = -1
+                        $progressForm.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+                    }
+                
+                    # Check if process completed
+                    if ($process.HasExited) {
+                        $monitorTimer.Stop()
+                        $extractionState.Completed = $true
+                        $extractionState.ExitCode = $process.ExitCode
+                        $progressForm.DialogResult = [System.Windows.Forms.DialogResult]::OK
+                    }
+                }.GetNewClosure())
+            
+            # Update status and start timer
+            Update-ProgressForm -Form $progressForm -Status "Extracting with 7-Zip..."
+            $monitorTimer.Start()
+            
+            # ShowDialog blocks but keeps UI responsive (processes messages)
+            $dialogResult = $progressForm.ShowDialog()
+            
+            # Cleanup
+            $monitorTimer.Stop()
+            $monitorTimer.Dispose()
+            Unregister-Event -SourceIdentifier $outputEvent.Name -ErrorAction SilentlyContinue
+            Remove-Job -Id $outputEvent.Id -Force -ErrorAction SilentlyContinue
+            
+            # Wait for process to fully exit if not already
+            if (-not $process.HasExited) {
+                $process.WaitForExit(1000)
+            }
+            
             $progressForm.Dispose()
             
-            if ($process.ExitCode -eq 0) { 
+            # Handle cancellation
+            if ($dialogResult -eq [System.Windows.Forms.DialogResult]::Cancel) {
+                return $null
+            }
+            
+            if ($extractionState.ExitCode -eq 0) { 
                 Write-Host "$($ArchiveType.ToUpper()) extracted successfully with 7-Zip to $DestinationPath"
                 Write-LogMessage "Extracted with 7-Zip successfully."
                 return $DestinationPath 
             }
             else {
-                Write-Warning "7-Zip extraction failed with exit code $($process.ExitCode). Trying WinRAR..."
-                Write-LogMessage "7-Zip extraction failed. Exit Code: $($process.ExitCode). Falling back to WinRAR."
+                Write-Warning "7-Zip extraction failed with exit code $($extractionState.ExitCode). Trying WinRAR..."
+                Write-LogMessage "7-Zip extraction failed. Exit Code: $($extractionState.ExitCode). Falling back to WinRAR."
                 # Reopen progress for WinRAR
                 $progressForm = Show-ExtractionProgress -ArchiveName $archiveName
-                $progressForm.Show()
             }
         }
         
-        # Fallback to WinRAR
+        # Fallback to WinRAR (uses Timer-based async monitoring)
         $winrar = Get-WinRARPath
         if (-not $winrar) { 
-            $progressForm.Close()
-            $progressForm.Dispose()
+            if ($progressForm -and -not $progressForm.IsDisposed) {
+                $progressForm.Dispose()
+            }
             $errMsg = "No archive extractor found (tried 7-Zip and WinRAR). Cannot extract '${ArchivePath}'. Please install 7-Zip or WinRAR."
             Write-Error $errMsg
             Write-LogMessage "ERROR: $errMsg"
             return $null 
         }
 
-        Update-ProgressForm -Form $progressForm -Status "Extracting with WinRAR..."
         Write-Host "Extracting with WinRAR..."
-        $processArgs = @('x', "`"$ArchivePath`"", "`"$DestinationPath\`"", '-y', '-o+')
-        $process = Start-Process -FilePath $winrar -ArgumentList $processArgs -NoNewWindow -Wait -PassThru
         
-        $progressForm.Close()
+        # Start WinRAR process without -Wait
+        $processArgs = @('x', "`"$ArchivePath`"", "`"$DestinationPath\`"", '-y', '-o+')
+        $winrarProcess = Start-Process -FilePath $winrar -ArgumentList $processArgs -NoNewWindow -PassThru
+        
+        $winrarState = @{ ExitCode = -1; Completed = $false }
+        
+        # Create timer to monitor WinRAR process
+        $winrarTimer = New-Object System.Windows.Forms.Timer
+        $winrarTimer.Interval = 200
+        
+        $winrarTimer.Add_Tick({
+                # Check for cancellation
+                if ($progressForm.Tag.Cancelled) {
+                    Write-LogMessage "User cancelled WinRAR extraction."
+                    try { $winrarProcess.Kill() } catch {}
+                    $winrarTimer.Stop()
+                    $winrarState.Completed = $true
+                    $progressForm.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+                }
+            
+                # Check if process completed
+                if ($winrarProcess.HasExited) {
+                    $winrarTimer.Stop()
+                    $winrarState.Completed = $true
+                    $winrarState.ExitCode = $winrarProcess.ExitCode
+                    $progressForm.DialogResult = [System.Windows.Forms.DialogResult]::OK
+                }
+            }.GetNewClosure())
+        
+        Update-ProgressForm -Form $progressForm -Status "Extracting with WinRAR..."
+        $winrarTimer.Start()
+        
+        $dialogResult = $progressForm.ShowDialog()
+        
+        # Cleanup
+        $winrarTimer.Stop()
+        $winrarTimer.Dispose()
         $progressForm.Dispose()
         
-        if ($process.ExitCode -ne 0) { 
-            $warnMsg = "WinRAR extraction might have failed for '${ArchivePath}'. Exit Code: $($process.ExitCode)."
+        if ($dialogResult -eq [System.Windows.Forms.DialogResult]::Cancel) {
+            return $null
+        }
+        
+        if ($winrarState.ExitCode -ne 0) { 
+            $warnMsg = "WinRAR extraction might have failed for '${ArchivePath}'. Exit Code: $($winrarState.ExitCode)."
             Write-Warning $warnMsg
             Write-LogMessage "WARNING: $warnMsg"
             return $null 
@@ -1055,17 +1153,26 @@ function Expand-ArchiveFile {
 }
 
 # -------------------------
-# Helper: Find ALL Executables (Verb-Noun: Get-AllExecutables)
+# Helper: Find ALL Runnables (Verb-Noun: Get-AllRunnables)
+# Finds .exe, .bat, and .cmd files for game installers and scripts
 # -------------------------
-function Get-AllExecutables {
+function Get-AllRunnables {
     param([string]$RootFolderPath)
-    Write-LogMessage "Searching for all executables (.exe) in '$RootFolderPath' (depth-first sort)."; Write-Host "Searching for all .exe files in '$RootFolderPath' and its subfolders..."
-    $allExecutables = Get-ChildItem -LiteralPath $RootFolderPath -Filter *.exe -File -Recurse -ErrorAction SilentlyContinue
-    if ($allExecutables) {
-        $sortedExecutables = $allExecutables | Sort-Object @{Expression = { ($_.FullName.Split([IO.Path]::DirectorySeparatorChar).Count) } }, FullName
-        Write-LogMessage "Found $($sortedExecutables.Count) executables."; return $sortedExecutables
+    Write-LogMessage "Searching for runnables (.exe, .bat, .cmd) in '$RootFolderPath' (depth-first sort)."
+    Write-Host "Searching for .exe, .bat, .cmd files in '$RootFolderPath' and its subfolders..."
+    
+    # Get all runnable file types
+    $allRunnables = Get-ChildItem -LiteralPath $RootFolderPath -Include @('*.exe', '*.bat', '*.cmd') -File -Recurse -ErrorAction SilentlyContinue
+    
+    if ($allRunnables) {
+        # Sort by folder depth (shallower first), then by name
+        $sortedRunnables = $allRunnables | Sort-Object @{Expression = { ($_.FullName.Split([IO.Path]::DirectorySeparatorChar).Count) } }, FullName
+        Write-LogMessage "Found $($sortedRunnables.Count) runnable files."
+        return $sortedRunnables
     }
-    Write-LogMessage "No .exe files found in '$RootFolderPath'."; Write-Warning "No .exe files found in '$RootFolderPath' or its subdirectories."; return $null
+    Write-LogMessage "No runnable files found in '$RootFolderPath'."
+    Write-Warning "No .exe, .bat, or .cmd files found in '$RootFolderPath' or its subdirectories."
+    return $null
 }
 
 # ---------------------------------------------------
@@ -1838,10 +1945,10 @@ if (Test-Path -LiteralPath $filePathFromQB -PathType Container) {
         Write-LogMessage "Found a primary archive file to process in folder: '$($mainFileToProcess.FullName)'"
     }
     else {
-        Write-LogMessage "No archives found in folder. Searching for executables..."
-        $allExecutables = Get-AllExecutables -RootFolderPath $downloadFolder
-        if ($allExecutables) {
-            $mainFileToProcess = $allExecutables
+        Write-LogMessage "No archives found in folder. Searching for runnables..."
+        $allRunnables = Get-AllRunnables -RootFolderPath $downloadFolder
+        if ($allRunnables) {
+            $mainFileToProcess = $allRunnables
         }
         else {
             Write-LogMessage "No executables found. Checking for media files..."
@@ -1883,10 +1990,10 @@ if ($mainFileToProcess) {
             Write-LogMessage "User confirmed extraction to: $($extractionResult.DestinationPath)"
             $extractedDir = Expand-ArchiveFile -ArchivePath $filePath -DestinationPath $extractionResult.DestinationPath
             if ($extractedDir) {
-                Write-Host "`nExtraction complete. Searching for executables..."
-                $executablesInArchive = Get-AllExecutables -RootFolderPath $extractedDir
-                if ($executablesInArchive) {
-                    Show-ExecutableSelectionForm -FoundExecutables $executablesInArchive -WindowTitle "qBitLauncher" -RootFolder $extractedDir
+                Write-Host "`nExtraction complete. Searching for runnables..."
+                $runnablesInArchive = Get-AllRunnables -RootFolderPath $extractedDir
+                if ($runnablesInArchive) {
+                    Show-ExecutableSelectionForm -FoundExecutables $runnablesInArchive -WindowTitle "qBitLauncher" -RootFolder $extractedDir
                 }
                 else {
                     Write-Warning "No executables found in the extracted folder: $extractedDir"
@@ -1899,11 +2006,11 @@ if ($mainFileToProcess) {
             Start-Process explorer -ArgumentList "`"$parentDir`""
         }
     } 
-    elseif ($ext -eq 'exe' -or $mainFileToProcess -is [array]) {
-        $executables = if ($mainFileToProcess -is [array]) { $mainFileToProcess } else { @($mainFileToProcess) }
-        Write-LogMessage "Processing one or more executables."
+    elseif ($ext -in @('exe', 'bat', 'cmd') -or $mainFileToProcess -is [array]) {
+        $runnables = if ($mainFileToProcess -is [array]) { $mainFileToProcess } else { @($mainFileToProcess) }
+        Write-LogMessage "Processing one or more runnable files."
         
-        Show-ExecutableSelectionForm -FoundExecutables $executables -WindowTitle "qBitLauncher" -RootFolder $parentDir
+        Show-ExecutableSelectionForm -FoundExecutables $runnables -WindowTitle "qBitLauncher" -RootFolder $parentDir
     } 
     elseif ($MediaExtensions -contains $ext) {
         Write-LogMessage "File is a media file."

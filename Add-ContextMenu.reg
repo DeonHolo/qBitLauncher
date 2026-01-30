@@ -1,0 +1,66 @@
+Windows Registry Editor Version 5.00
+
+; =====================================================
+; qBitLauncher Context Menu Integration
+; =====================================================
+; Adds "Open with qBitLauncher" to Shift+Right-click menu
+; for folders and archive files (.zip, .rar, .7z, .iso, .img)
+;
+; IMPORTANT: Edit the script path below to match your installation!
+; Replace D:\\Games\\1. Steamless\\qBitLauncher\\qBitLauncher.ps1
+; with your actual path (use double backslashes \\)
+; =====================================================
+
+; --- FOLDERS (Shift+Right-click on a folder) ---
+[HKEY_CLASSES_ROOT\Directory\shell\qBitLauncher]
+@="Open with qBitLauncher"
+"Icon"="powershell.exe,0"
+"Extended"=""
+
+[HKEY_CLASSES_ROOT\Directory\shell\qBitLauncher\command]
+@="powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File \"D:\\Games\\1. Steamless\\qBitLauncher\\qBitLauncher.ps1\" \"%V\""
+
+; --- ZIP FILES ---
+[HKEY_CLASSES_ROOT\SystemFileAssociations\.zip\shell\qBitLauncher]
+@="Open with qBitLauncher"
+"Icon"="powershell.exe,0"
+"Extended"=""
+
+[HKEY_CLASSES_ROOT\SystemFileAssociations\.zip\shell\qBitLauncher\command]
+@="powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File \"D:\\Games\\1. Steamless\\qBitLauncher\\qBitLauncher.ps1\" \"%1\""
+
+; --- RAR FILES ---
+[HKEY_CLASSES_ROOT\SystemFileAssociations\.rar\shell\qBitLauncher]
+@="Open with qBitLauncher"
+"Icon"="powershell.exe,0"
+"Extended"=""
+
+[HKEY_CLASSES_ROOT\SystemFileAssociations\.rar\shell\qBitLauncher\command]
+@="powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File \"D:\\Games\\1. Steamless\\qBitLauncher\\qBitLauncher.ps1\" \"%1\""
+
+; --- 7Z FILES ---
+[HKEY_CLASSES_ROOT\SystemFileAssociations\.7z\shell\qBitLauncher]
+@="Open with qBitLauncher"
+"Icon"="powershell.exe,0"
+"Extended"=""
+
+[HKEY_CLASSES_ROOT\SystemFileAssociations\.7z\shell\qBitLauncher\command]
+@="powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File \"D:\\Games\\1. Steamless\\qBitLauncher\\qBitLauncher.ps1\" \"%1\""
+
+; --- ISO FILES ---
+[HKEY_CLASSES_ROOT\SystemFileAssociations\.iso\shell\qBitLauncher]
+@="Open with qBitLauncher"
+"Icon"="powershell.exe,0"
+"Extended"=""
+
+[HKEY_CLASSES_ROOT\SystemFileAssociations\.iso\shell\qBitLauncher\command]
+@="powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File \"D:\\Games\\1. Steamless\\qBitLauncher\\qBitLauncher.ps1\" \"%1\""
+
+; --- IMG FILES ---
+[HKEY_CLASSES_ROOT\SystemFileAssociations\.img\shell\qBitLauncher]
+@="Open with qBitLauncher"
+"Icon"="powershell.exe,0"
+"Extended"=""
+
+[HKEY_CLASSES_ROOT\SystemFileAssociations\.img\shell\qBitLauncher\command]
+@="powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File \"D:\\Games\\1. Steamless\\qBitLauncher\\qBitLauncher.ps1\" \"%1\""
