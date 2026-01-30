@@ -1161,8 +1161,10 @@ function Get-AllRunnables {
     Write-LogMessage "Searching for runnables (.exe, .bat, .cmd) in '$RootFolderPath' (depth-first sort)."
     Write-Host "Searching for .exe, .bat, .cmd files in '$RootFolderPath' and its subfolders..."
     
-    # Get all runnable file types
-    $allRunnables = Get-ChildItem -LiteralPath $RootFolderPath -Include @('*.exe', '*.bat', '*.cmd') -File -Recurse -ErrorAction SilentlyContinue
+    # Get all runnable file types (use Where-Object for reliable filtering)
+    $runnableExtensions = @('.exe', '.bat', '.cmd')
+    $allRunnables = Get-ChildItem -LiteralPath $RootFolderPath -File -Recurse -ErrorAction SilentlyContinue | 
+    Where-Object { $runnableExtensions -contains $_.Extension.ToLowerInvariant() }
     
     if ($allRunnables) {
         # Sort by folder depth (shallower first), then by name
