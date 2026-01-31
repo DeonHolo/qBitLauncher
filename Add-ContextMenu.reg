@@ -20,6 +20,15 @@ Windows Registry Editor Version 5.00
 [HKEY_CLASSES_ROOT\Directory\shell\qBitLauncher\command]
 @="powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File \"D:\\Games\\1. Steamless\\qBitLauncher\\qBitLauncher.ps1\" \"%V\""
 
+; --- FOLDER BACKGROUND (Shift+Right-click on empty space inside a folder) ---
+[HKEY_CLASSES_ROOT\Directory\Background\shell\qBitLauncher]
+@="Open with qBitLauncher"
+"Icon"="powershell.exe,0"
+"Extended"=""
+
+[HKEY_CLASSES_ROOT\Directory\Background\shell\qBitLauncher\command]
+@="powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File \"D:\\Games\\1. Steamless\\qBitLauncher\\qBitLauncher.ps1\" \"%V\""
+
 ; --- ZIP FILES ---
 [HKEY_CLASSES_ROOT\SystemFileAssociations\.zip\shell\qBitLauncher]
 @="Open with qBitLauncher"

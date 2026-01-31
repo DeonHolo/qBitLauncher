@@ -840,28 +840,46 @@ function Show-ExtractionProgress {
     $statusLabel.ForeColor = $colors.TextFore
     $form.Controls.Add($statusLabel)
     
-    # Cancel button
-    $cancelButton = New-Object System.Windows.Forms.Button
-    $cancelButton.Location = New-Object System.Drawing.Point(330, 100)
-    $cancelButton.Size = New-Object System.Drawing.Size(90, 30)
-    $cancelButton.Text = "&Cancel"
-    Set-ThemedButton -Button $cancelButton -Colors $colors
-    $cancelButton.Add_Click({
-            $form.Tag.Cancelled = $true
-            $statusLabel.Text = "Cancelling..."
-            $cancelButton.Enabled = $false
-        })
-    $form.Controls.Add($cancelButton)
+    # Size info label (shows extracted size)
+    $sizeLabel = New-Object System.Windows.Forms.Label
+    $sizeLabel.Location = New-Object System.Drawing.Point(20, 108)
+    $sizeLabel.Size = New-Object System.Drawing.Size(300, 20)
+    $sizeLabel.Text = ""
+    $sizeLabel.ForeColor = $colors.SecondaryText
+    $sizeLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $form.Controls.Add($sizeLabel)
     
-    # Store references for external access
-    $form.Tag = @{
+    # Adjust form height and button position
+    $form.Size = New-Object System.Drawing.Size(450, 200)
+    
+    # Use PSCustomObject instead of hashtable for proper property access in event handlers
+    $formState = [PSCustomObject]@{
         ProgressPanel = $progressPanel
         ProgressFill  = $progressFill
         MarqueeTimer  = $marqueeTimer
         StatusLabel   = $statusLabel
+        SizeLabel     = $sizeLabel
         MainLabel     = $label
         Cancelled     = $false
+        CancelButton  = $null
+        TotalSize     = 0
+        DestPath      = ""
     }
+    $form.Tag = $formState
+    
+    # Cancel button
+    $cancelButton = New-Object System.Windows.Forms.Button
+    $cancelButton.Location = New-Object System.Drawing.Point(330, 120)
+    $cancelButton.Size = New-Object System.Drawing.Size(90, 30)
+    $cancelButton.Text = "&Cancel"
+    Set-ThemedButton -Button $cancelButton -Colors $colors
+    $cancelButton.Add_Click({
+            $formState.Cancelled = $true
+            $statusLabel.Text = "Cancelling..."
+            $cancelButton.Enabled = $false
+        }.GetNewClosure())
+    $form.Controls.Add($cancelButton)
+    $formState.CancelButton = $cancelButton
     
     return $form
 }
@@ -953,6 +971,31 @@ function Expand-ArchiveFile {
         if ($sevenZip) {
             Write-Host "Extracting with 7-Zip..."
             
+            # Get archive uncompressed size using 7z l (list) command
+            $totalUncompressedSize = 0
+            try {
+                $listOutput = & $sevenZip l "$ArchivePath" 2>&1
+                # 7-Zip outputs vary by format. Look for the summary line.
+                # Example: "2026-01-28 15:24:29         2869699069   2115136365  341 files, 38 folders"
+                # Or:      "                           2869699069   2115136365  341 files, 38 folders"
+                # Format: [Date Time] Size  Compressed  Count files[, Count folders]
+                foreach ($line in $listOutput) {
+                    # Pattern: look for large number followed by another number and "files" anywhere in line
+                    if ($line -match '(\d{5,})\s+\d+\s+\d+\s+files') {
+                        $totalUncompressedSize = [long]$Matches[1]
+                        break
+                    }
+                }
+                Write-LogMessage "Archive total uncompressed size: $totalUncompressedSize bytes"
+            }
+            catch {
+                Write-LogMessage "Could not determine archive size: $($_.Exception.Message)"
+            }
+            
+            # Store size and destination in progress form state
+            $progressForm.Tag.TotalSize = $totalUncompressedSize
+            $progressForm.Tag.DestPath = $DestinationPath
+            
             # Use -bsp1 for progress output
             $processArgs = "x `"$ArchivePath`" -o`"$DestinationPath`" -y -bsp1"
             
@@ -972,9 +1015,11 @@ function Expand-ArchiveFile {
             
             # Track last progress and extraction result
             $extractionState = @{
-                LastPercent = 0
-                ExitCode    = -1
-                Completed   = $false
+                LastPercent   = 0
+                ExitCode      = -1
+                Completed     = $false
+                Cancelled     = $false
+                LastSizeCheck = [DateTime]::MinValue
             }
             
             # Register async output handler
@@ -1013,6 +1058,29 @@ function Expand-ArchiveFile {
                             }
                         }
                     }
+                    
+                    # Update extracted folder size (every 1 second to avoid performance hit)
+                    $now = [DateTime]::Now
+                    if (($now - $extractionState.LastSizeCheck).TotalSeconds -ge 1) {
+                        $extractionState.LastSizeCheck = $now
+                        $destPath = $progressForm.Tag.DestPath
+                        $totalSize = $progressForm.Tag.TotalSize
+                        if ($destPath -and (Test-Path -LiteralPath $destPath -ErrorAction SilentlyContinue)) {
+                            try {
+                                $extractedSize = (Get-ChildItem -LiteralPath $destPath -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
+                                if ($null -eq $extractedSize) { $extractedSize = 0 }
+                                $extractedMB = [math]::Round($extractedSize / 1MB, 1)
+                                if ($totalSize -gt 0) {
+                                    $totalMB = [math]::Round($totalSize / 1MB, 1)
+                                    $progressForm.Tag.SizeLabel.Text = "Extracted: $extractedMB MB / $totalMB MB"
+                                }
+                                else {
+                                    $progressForm.Tag.SizeLabel.Text = "Extracted: $extractedMB MB"
+                                }
+                            }
+                            catch { }
+                        }
+                    }
                 
                     # Check for cancellation
                     if ($progressForm.Tag.Cancelled) {
@@ -1021,6 +1089,7 @@ function Expand-ArchiveFile {
                         $monitorTimer.Stop()
                         $extractionState.Completed = $true
                         $extractionState.ExitCode = -1
+                        $extractionState.Cancelled = $true
                         $progressForm.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
                     }
                 
@@ -1053,8 +1122,9 @@ function Expand-ArchiveFile {
             
             $progressForm.Dispose()
             
-            # Handle cancellation
-            if ($dialogResult -eq [System.Windows.Forms.DialogResult]::Cancel) {
+            # Handle cancellation - DO NOT fall back to WinRAR if user cancelled
+            if ($dialogResult -eq [System.Windows.Forms.DialogResult]::Cancel -or $extractionState.Cancelled) {
+                Write-LogMessage "Extraction cancelled by user."
                 return $null
             }
             
@@ -1190,8 +1260,10 @@ function Show-ExtractionConfirmForm {
     
     # Result object
     $result = @{
-        Confirmed       = $false
-        DestinationPath = $DefaultDestination
+        Confirmed         = $false
+        DestinationPath   = $DefaultDestination
+        SkippedExtraction = $false
+        UseExisting       = $false
     }
 
     $form = New-Object System.Windows.Forms.Form
@@ -1256,7 +1328,7 @@ function Show-ExtractionConfirmForm {
 
     # Buttons
     $extractButton = New-Object System.Windows.Forms.Button
-    $extractButton.Location = New-Object System.Drawing.Point(450, 160)
+    $extractButton.Location = New-Object System.Drawing.Point(300, 160)
     $extractButton.Size = New-Object System.Drawing.Size(100, 35)
     $extractButton.Text = "&Extract"
     # Don't set DialogResult - we'll handle validation first
@@ -1269,17 +1341,42 @@ function Show-ExtractionConfirmForm {
                 Show-ThemedMessageBox -Message $validation.Error -Title "Invalid Path" -Icon 'Warning'
                 return
             }
+            
+            # Check if destination folder already exists and has files
+            $destPath = $destTextBox.Text
+            if ((Test-Path -LiteralPath $destPath) -and (Get-ChildItem -LiteralPath $destPath -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+                $overwriteResult = Show-ThemedMessageBox -Message "The destination folder already contains files:`n$destPath`n`nDo you want to overwrite existing files?" -Title "Folder Exists" -Buttons 'YesNoCancel' -Icon 'Question'
+                if ($overwriteResult -eq [System.Windows.Forms.DialogResult]::No) {
+                    # User chose No - use existing files, skip extraction
+                    $form.DialogResult = [System.Windows.Forms.DialogResult]::Retry
+                    $form.Close()
+                    return
+                }
+                elseif ($overwriteResult -eq [System.Windows.Forms.DialogResult]::Cancel) {
+                    # User cancelled - stay on dialog
+                    return
+                }
+                # User chose Yes - proceed with extraction/overwrite
+            }
+            
             $form.DialogResult = [System.Windows.Forms.DialogResult]::Yes
             $form.Close()
         }.GetNewClosure())
 
+    # Skip Extraction button - for when archive is irrelevant (e.g., ZIP in crack folder)
+    $skipToExeButton = New-Object System.Windows.Forms.Button
+    $skipToExeButton.Location = New-Object System.Drawing.Point(410, 160)
+    $skipToExeButton.Size = New-Object System.Drawing.Size(120, 35)
+    $skipToExeButton.Text = "&Skip Extraction"
+    $skipToExeButton.DialogResult = [System.Windows.Forms.DialogResult]::Ignore
+
     $cancelButton = New-Object System.Windows.Forms.Button
-    $cancelButton.Location = New-Object System.Drawing.Point(560, 160)
+    $cancelButton.Location = New-Object System.Drawing.Point(540, 160)
     $cancelButton.Size = New-Object System.Drawing.Size(100, 35)
     $cancelButton.Text = "&Cancel"
     $cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::No
 
-    foreach ($button in @($extractButton, $cancelButton)) {
+    foreach ($button in @($extractButton, $skipToExeButton, $cancelButton)) {
         Set-ThemedButton -Button $button -Colors $colors
         $form.Controls.Add($button)
     }
@@ -1292,6 +1389,14 @@ function Show-ExtractionConfirmForm {
     if ($dialogResult -eq [System.Windows.Forms.DialogResult]::Yes) {
         $result.Confirmed = $true
         $result.DestinationPath = $destTextBox.Text
+    }
+    elseif ($dialogResult -eq [System.Windows.Forms.DialogResult]::Retry) {
+        # User chose to use existing extracted files
+        $result.UseExisting = $true
+        $result.DestinationPath = $destTextBox.Text
+    }
+    elseif ($dialogResult -eq [System.Windows.Forms.DialogResult]::Ignore) {
+        $result.SkippedExtraction = $true
     }
     
     $form.Dispose()
@@ -2001,6 +2106,34 @@ if ($mainFileToProcess) {
                     Write-Warning "No executables found in the extracted folder: $extractedDir"
                     Start-Process explorer -ArgumentList "`"$extractedDir`""
                 }
+            }
+        }
+        elseif ($extractionResult.UseExisting) {
+            # User chose to use existing extracted files instead of re-extracting
+            $existingDir = $extractionResult.DestinationPath
+            Write-LogMessage "User chose to use existing files in: '$existingDir'"
+            Write-Host "`nUsing existing extracted files. Searching for runnables..."
+            $runnablesInExisting = Get-AllRunnables -RootFolderPath $existingDir
+            if ($runnablesInExisting) {
+                Show-ExecutableSelectionForm -FoundExecutables $runnablesInExisting -WindowTitle "qBitLauncher" -RootFolder $existingDir
+            }
+            else {
+                Write-Warning "No executables found in existing folder: $existingDir"
+                Start-Process explorer -ArgumentList "`"$existingDir`""
+            }
+        }
+        elseif ($extractionResult.SkippedExtraction) {
+            # User chose to skip extraction and go directly to EXE handler
+            # Use the original download folder (root) instead of the archive's parent directory
+            $searchFolder = if ($downloadFolder) { $downloadFolder } else { $parentDir }
+            Write-LogMessage "User skipped extraction. Searching for executables in: '$searchFolder'"
+            $runnablesInFolder = Get-AllRunnables -RootFolderPath $searchFolder
+            if ($runnablesInFolder) {
+                Show-ExecutableSelectionForm -FoundExecutables $runnablesInFolder -WindowTitle "qBitLauncher" -RootFolder $searchFolder
+            }
+            else {
+                Write-Warning "No executables found in folder: $searchFolder"
+                Start-Process explorer -ArgumentList "`"$searchFolder`""
             }
         }
         else {

@@ -9,6 +9,9 @@ Windows Registry Editor Version 5.00
 ; --- FOLDERS ---
 [-HKEY_CLASSES_ROOT\Directory\shell\qBitLauncher]
 
+; --- FOLDER BACKGROUND ---
+[-HKEY_CLASSES_ROOT\Directory\Background\shell\qBitLauncher]
+
 ; --- ZIP FILES ---
 [-HKEY_CLASSES_ROOT\SystemFileAssociations\.zip\shell\qBitLauncher]
 
