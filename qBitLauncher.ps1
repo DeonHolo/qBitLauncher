@@ -41,7 +41,7 @@ public const int ICON_BIG = 1;
 # Configuration
 # -------------------------
 # Version and update settings
-$Global:ScriptVersion = "2.1.0"
+$Global:ScriptVersion = "2.2.0"
 $Global:GitHubRawUrl = "https://raw.githubusercontent.com/DeonHolo/qBitLauncher/main/qBitLauncher.ps1"
 $Global:GitHubCommitsUrl = "https://github.com/DeonHolo/qBitLauncher/commits/main"
 
@@ -648,14 +648,14 @@ function Get-ArchiveExtractorArguments {
 
     switch ($Extractor.Kind) {
         "7ZipGui" {
-            return @('x', "`"$ArchivePath`"", "-o`"$DestinationPath`"", '-y')
+            return "x -y -aoa -o`"$DestinationPath`" `"$ArchivePath`""
         }
         "WinRAR" {
             $winrarDestination = $DestinationPath
             if (-not $winrarDestination.EndsWith('\')) {
                 $winrarDestination = "$winrarDestination\"
             }
-            return @('x', '-y', '-o+', "`"$ArchivePath`"", "`"$winrarDestination`"")
+            return "x -y -o+ `"$ArchivePath`" `"$winrarDestination`""
         }
         default {
             throw "Unsupported extractor kind: $($Extractor.Kind)"
