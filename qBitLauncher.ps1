@@ -648,14 +648,14 @@ function Get-ArchiveExtractorArguments {
 
     switch ($Extractor.Kind) {
         "7ZipGui" {
-            return @('x', "`"$ArchivePath`"", "-o`"$DestinationPath`"", '-y')
+            return "x -y -aoa -o`"$DestinationPath`" `"$ArchivePath`""
         }
         "WinRAR" {
             $winrarDestination = $DestinationPath
             if (-not $winrarDestination.EndsWith('\')) {
                 $winrarDestination = "$winrarDestination\"
             }
-            return @('x', '-y', '-o+', "`"$ArchivePath`"", "`"$winrarDestination`"")
+            return "x -y -o+ `"$ArchivePath`" `"$winrarDestination`""
         }
         default {
             throw "Unsupported extractor kind: $($Extractor.Kind)"
