@@ -587,28 +587,88 @@ function Get-WinRARPath {
 }
 
 # -------------------------
-# Helper: Find 7-Zip.exe (NEW - Verb-Noun: Get-7ZipPath)
+# Helper: Find 7-Zip GUI extractor (Verb-Noun: Get-7ZipGuiPath)
 # -------------------------
-function Get-7ZipPath {
+function Get-7ZipGuiPath {
     foreach ($path in @(
             (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\7zFM.exe' -ErrorAction SilentlyContinue).'(Default)',
-            "$env:ProgramFiles\7-Zip\7z.exe",
-            "$env:ProgramFiles(x86)\7-Zip\7z.exe"
+            "$env:ProgramFiles\7-Zip\7zG.exe",
+            "$env:ProgramFiles(x86)\7-Zip\7zG.exe"
         )) {
         if ($path) {
-            # If we found 7zFM.exe path, convert to 7z.exe (command line version)
-            $cmdPath = $path -replace '7zFM\.exe$', '7z.exe'
-            if (Test-Path $cmdPath) {
-                Write-LogMessage "Found 7-Zip at: $cmdPath"
-                return $cmdPath
+            $guiPath = $path -replace '7zFM\.exe$', '7zG.exe' -replace '7z\.exe$', '7zG.exe'
+            if (Test-Path $guiPath) {
+                Write-LogMessage "Found 7-Zip GUI at: $guiPath"
+                return $guiPath
             }
-            if (Test-Path $path) {
-                Write-LogMessage "Found 7-Zip at: $path"
+            if ((Split-Path $path -Leaf) -ieq '7zG.exe' -and (Test-Path $path)) {
+                Write-LogMessage "Found 7-Zip GUI at: $path"
                 return $path
             }
         }
     }
-    Write-LogMessage "7-Zip not found."; return $null
+    Write-LogMessage "7-Zip GUI not found."; return $null
+}
+
+# -------------------------
+# Helper: Choose GUI extractors automatically (Verb-Noun: Get-ArchiveExtractorCandidates)
+# -------------------------
+function Get-ArchiveExtractorCandidates {
+    param([string]$ArchiveType)
+
+    $sevenZipGui = Get-7ZipGuiPath
+    $winrar = Get-WinRARPath
+
+    $sevenZipCandidate = if ($sevenZipGui) {
+        [PSCustomObject]@{ Name = "7-Zip"; Kind = "7ZipGui"; Path = $sevenZipGui }
+    }
+    else { $null }
+
+    $winrarCandidate = if ($winrar) {
+        [PSCustomObject]@{ Name = "WinRAR"; Kind = "WinRAR"; Path = $winrar }
+    }
+    else { $null }
+
+    if ($ArchiveType -eq 'rar') {
+        return @($winrarCandidate, $sevenZipCandidate) | Where-Object { $null -ne $_ }
+    }
+
+    return @($sevenZipCandidate, $winrarCandidate) | Where-Object { $null -ne $_ }
+}
+
+# -------------------------
+# Helper: Build GUI extractor command line (Verb-Noun: Get-ArchiveExtractorArguments)
+# -------------------------
+function Get-ArchiveExtractorArguments {
+    param(
+        [PSCustomObject]$Extractor,
+        [string]$ArchivePath,
+        [string]$DestinationPath
+    )
+
+    switch ($Extractor.Kind) {
+        "7ZipGui" {
+            return @('x', "`"$ArchivePath`"", "-o`"$DestinationPath`"", '-y')
+        }
+        "WinRAR" {
+            $winrarDestination = $DestinationPath
+            if (-not $winrarDestination.EndsWith('\')) {
+                $winrarDestination = "$winrarDestination\"
+            }
+            return @('x', '-y', '-o+', "`"$ArchivePath`"", "`"$winrarDestination`"")
+        }
+        default {
+            throw "Unsupported extractor kind: $($Extractor.Kind)"
+        }
+    }
+}
+
+# -------------------------
+# Helper: Interpret extractor exit code (Verb-Noun: Test-ArchiveExtractionSucceeded)
+# -------------------------
+function Test-ArchiveExtractionSucceeded {
+    param([int]$ExitCode)
+    return ($ExitCode -eq 0 -or $ExitCode -eq 1)
 }
 
 # -------------------------
@@ -773,160 +833,16 @@ function Get-ExecutableIcon {
 }
 
 # -------------------------
-# Helper: Show Extraction Progress Form (Verb-Noun: Show-ExtractionProgress)
-# -------------------------
-function Show-ExtractionProgress {
-    param(
-        [string]$ArchiveName,
-        [scriptblock]$OnCancel = $null
-    )
-    $colors = $Global:CurrentTheme
-    
-    $form = New-Object System.Windows.Forms.Form
-    $form.Text = "Extracting..."
-    $form.Size = New-Object System.Drawing.Size(450, 180)
-    $form.StartPosition = 'CenterScreen'
-    $form.FormBorderStyle = 'FixedDialog'
-    $form.MaximizeBox = $false
-    $form.MinimizeBox = $true
-    $form.ControlBox = $true
-    $form.BackColor = $colors.FormBack
-    $form.Font = New-Object System.Drawing.Font("Segoe UI", 10)
-    $form.TopMost = $true
-    $form.Add_Shown({ Set-FormIcon -Form $this })
-    # Minimize when the form loses focus (user clicks elsewhere)
-    $form.Add_Deactivate({ $this.WindowState = 'Minimized' })
-    
-    $label = New-Object System.Windows.Forms.Label
-    $label.Location = New-Object System.Drawing.Point(20, 15)
-    $label.Size = New-Object System.Drawing.Size(400, 25)
-    $label.Text = "Extracting: $ArchiveName"
-    $label.ForeColor = $colors.TextFore
-    $form.Controls.Add($label)
-    
-    # Custom themed progress bar (panel-based for color control)
-    $progressPanel = New-Object System.Windows.Forms.Panel
-    $progressPanel.Location = New-Object System.Drawing.Point(20, 50)
-    $progressPanel.Size = New-Object System.Drawing.Size(400, 25)
-    $progressPanel.BackColor = $colors.ControlBack
-    $progressPanel.BorderStyle = 'FixedSingle'
-    $form.Controls.Add($progressPanel)
-    
-    $progressFill = New-Object System.Windows.Forms.Panel
-    $progressFill.Location = New-Object System.Drawing.Point(0, 0)
-    $progressFill.Size = New-Object System.Drawing.Size(0, 23)
-    $progressFill.BackColor = $colors.Accent
-    $progressPanel.Controls.Add($progressFill)
-    
-    # Marquee animation timer for indeterminate progress
-    $marqueeTimer = New-Object System.Windows.Forms.Timer
-    $marqueeTimer.Interval = 30
-    $marqueePos = 0
-    $marqueeWidth = 80
-    $marqueeTimer.Add_Tick({
-            $script:marqueePos = ($script:marqueePos + 3) % (400 + $marqueeWidth)
-            $startX = $script:marqueePos - $marqueeWidth
-            if ($startX -lt 0) { $startX = 0 }
-            $endX = [Math]::Min($script:marqueePos, 400)
-            $progressFill.Location = New-Object System.Drawing.Point($startX, 0)
-            $progressFill.Size = New-Object System.Drawing.Size(($endX - $startX), 23)
-        }.GetNewClosure())
-    $marqueeTimer.Start()
-    
-    $statusLabel = New-Object System.Windows.Forms.Label
-    $statusLabel.Location = New-Object System.Drawing.Point(20, 85)
-    $statusLabel.Size = New-Object System.Drawing.Size(300, 20)
-    $statusLabel.Text = "Please wait..."
-    $statusLabel.ForeColor = $colors.TextFore
-    $form.Controls.Add($statusLabel)
-    
-    # Size info label (shows extracted size)
-    $sizeLabel = New-Object System.Windows.Forms.Label
-    $sizeLabel.Location = New-Object System.Drawing.Point(20, 108)
-    $sizeLabel.Size = New-Object System.Drawing.Size(300, 20)
-    $sizeLabel.Text = ""
-    $sizeLabel.ForeColor = $colors.SecondaryText
-    $sizeLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9)
-    $form.Controls.Add($sizeLabel)
-    
-    # Adjust form height and button position
-    $form.Size = New-Object System.Drawing.Size(450, 200)
-    
-    # Use PSCustomObject instead of hashtable for proper property access in event handlers
-    $formState = [PSCustomObject]@{
-        ProgressPanel = $progressPanel
-        ProgressFill  = $progressFill
-        MarqueeTimer  = $marqueeTimer
-        StatusLabel   = $statusLabel
-        SizeLabel     = $sizeLabel
-        MainLabel     = $label
-        Cancelled     = $false
-        CancelButton  = $null
-        TotalSize     = 0
-        DestPath      = ""
-    }
-    $form.Tag = $formState
-    
-    # Cancel button
-    $cancelButton = New-Object System.Windows.Forms.Button
-    $cancelButton.Location = New-Object System.Drawing.Point(330, 120)
-    $cancelButton.Size = New-Object System.Drawing.Size(90, 30)
-    $cancelButton.Text = "&Cancel"
-    Set-ThemedButton -Button $cancelButton -Colors $colors
-    $cancelButton.Add_Click({
-            $formState.Cancelled = $true
-            $statusLabel.Text = "Cancelling..."
-            $cancelButton.Enabled = $false
-        }.GetNewClosure())
-    $form.Controls.Add($cancelButton)
-    $formState.CancelButton = $cancelButton
-    
-    return $form
-}
-
-
-# -------------------------
-# Helper: Update Progress Form (Verb-Noun: Update-ProgressForm)
-# -------------------------
-function Update-ProgressForm {
-    param(
-        [System.Windows.Forms.Form]$Form,
-        [int]$Percentage = -1,
-        [string]$Status = $null
-    )
-    if (-not $Form -or $Form.IsDisposed) { return }
-    
-    $controls = $Form.Tag
-    if ($Percentage -ge 0 -and $Percentage -le 100) {
-        # Stop marquee animation when switching to percentage mode
-        if ($controls.MarqueeTimer -and $controls.MarqueeTimer.Enabled) {
-            $controls.MarqueeTimer.Stop()
-        }
-        # Set progress fill width based on percentage
-        $fillWidth = [int]([Math]::Round(($Percentage / 100.0) * 398))
-        $controls.ProgressFill.Location = New-Object System.Drawing.Point(0, 0)
-        $controls.ProgressFill.Size = New-Object System.Drawing.Size($fillWidth, 23)
-    }
-    if ($Status) {
-        $controls.StatusLabel.Text = $Status
-    }
-    $Form.Refresh()
-    [System.Windows.Forms.Application]::DoEvents()
-}
-
-# -------------------------
 # Helper: Extract Archive (Verb-Noun: Expand-ArchiveFile)
-# Uses async I/O to keep GUI responsive during large file extractions
+# Hands extraction to the user's installed extractor GUI, then resumes qBitLauncher.
 # -------------------------
 function Expand-ArchiveFile {
     param(
-        [string]$ArchivePath, 
-        [string]$DestinationPath  # Now accepts direct destination path
+        [string]$ArchivePath,
+        [string]$DestinationPath
     )
     $ArchiveType = [IO.Path]::GetExtension($ArchivePath).TrimStart('.').ToLowerInvariant()
-    $archiveName = [IO.Path]::GetFileName($ArchivePath)
     Write-LogMessage "Attempting to extract '${ArchivePath}' (Type: ${ArchiveType})"
-    Write-Host "Attempting to extract '${ArchivePath}'..."
     Write-LogMessage "Target extraction directory: '$DestinationPath'"
 
     if (-not (Test-Path -LiteralPath $DestinationPath)) {
@@ -943,283 +859,49 @@ function Expand-ArchiveFile {
     }
     else { Write-LogMessage "Extraction directory '$DestinationPath' already exists." }
 
-    # Show progress window
-    $progressForm = Show-ExtractionProgress -ArchiveName $archiveName
+    $extractors = @(Get-ArchiveExtractorCandidates -ArchiveType $ArchiveType)
+    if (-not $extractors -or $extractors.Count -eq 0) {
+        $errMsg = "No GUI archive extractor found. Please install 7-Zip or WinRAR."
+        Write-LogMessage "ERROR: $errMsg"
+        Show-ThemedMessageBox -Message $errMsg -Title "Extractor Not Found" -Icon 'Error' | Out-Null
+        return $null
+    }
 
-    try {
-        # Try native PowerShell for ZIP first
-        if ($ArchiveType -eq 'zip') {
-            try { 
-                $progressForm.Show()
-                Update-ProgressForm -Form $progressForm -Status "Using native PowerShell..."
-                Write-Host "Using native PowerShell to extract ZIP..."
-                Expand-Archive -LiteralPath $ArchivePath -DestinationPath $DestinationPath -Force -ErrorAction Stop
-                $progressForm.Close()
-                $progressForm.Dispose()
-                Write-Host "ZIP extracted successfully."
-                Write-LogMessage "ZIP extracted with Expand-Archive."
-                return $DestinationPath 
-            } 
-            catch { 
-                Write-Warning "Native ZIP extraction failed. Trying other extractors..."
-                Write-LogMessage "Native ZIP extraction failed. Trying other extractors." 
-            }
-        }
-        
-        # Try 7-Zip first (more common and handles more formats)
-        $sevenZip = Get-7ZipPath
-        if ($sevenZip) {
-            Write-Host "Extracting with 7-Zip..."
-            
-            # Get archive uncompressed size using 7z l (list) command
-            $totalUncompressedSize = 0
-            try {
-                $listOutput = & $sevenZip l "$ArchivePath" 2>&1
-                # 7-Zip outputs vary by format. Look for the summary line.
-                # Example: "2026-01-28 15:24:29         2869699069   2115136365  341 files, 38 folders"
-                # Or:      "                           2869699069   2115136365  341 files, 38 folders"
-                # Format: [Date Time] Size  Compressed  Count files[, Count folders]
-                foreach ($line in $listOutput) {
-                    # Pattern: look for large number followed by another number and "files" anywhere in line
-                    if ($line -match '(\d{5,})\s+\d+\s+\d+\s+files') {
-                        $totalUncompressedSize = [long]$Matches[1]
-                        break
-                    }
+    foreach ($extractor in $extractors) {
+        $process = $null
+        try {
+            $arguments = Get-ArchiveExtractorArguments -Extractor $extractor -ArchivePath $ArchivePath -DestinationPath $DestinationPath
+            Write-LogMessage "Launching $($extractor.Name) GUI extractor: $($extractor.Path)"
+            Write-Host "Launching $($extractor.Name) to extract '${ArchivePath}'..."
+
+            $process = Start-Process -FilePath $extractor.Path -ArgumentList $arguments -PassThru -Wait -ErrorAction Stop
+            $exitCode = $process.ExitCode
+            Write-LogMessage "$($extractor.Name) exited with code $exitCode."
+
+            if (Test-ArchiveExtractionSucceeded -ExitCode $exitCode) {
+                if ($exitCode -eq 1) {
+                    Write-LogMessage "$($extractor.Name) completed with warnings. Continuing to executable discovery."
                 }
-                Write-LogMessage "Archive total uncompressed size: $totalUncompressedSize bytes"
+                Write-LogMessage "Extracted with $($extractor.Name) GUI successfully."
+                return $DestinationPath
             }
-            catch {
-                Write-LogMessage "Could not determine archive size: $($_.Exception.Message)"
-            }
-            
-            # Store size and destination in progress form state
-            $progressForm.Tag.TotalSize = $totalUncompressedSize
-            $progressForm.Tag.DestPath = $DestinationPath
-            
-            # Use -bsp1 for progress output
-            $processArgs = "x `"$ArchivePath`" -o`"$DestinationPath`" -y -bsp1"
-            
-            $psi = New-Object System.Diagnostics.ProcessStartInfo
-            $psi.FileName = $sevenZip
-            $psi.Arguments = $processArgs
-            $psi.UseShellExecute = $false
-            $psi.RedirectStandardOutput = $true
-            $psi.CreateNoWindow = $true
-            
-            $process = New-Object System.Diagnostics.Process
-            $process.StartInfo = $psi
-            $process.EnableRaisingEvents = $true
-            
-            # Thread-safe buffer for async output (using synchronized ArrayList)
-            $outputBuffer = [System.Collections.ArrayList]::Synchronized([System.Collections.ArrayList]::new())
-            
-            # Track last progress and extraction result
-            $extractionState = @{
-                LastPercent   = 0
-                ExitCode      = -1
-                Completed     = $false
-                Cancelled     = $false
-                LastSizeCheck = [DateTime]::MinValue
-            }
-            
-            # Register async output handler
-            $outputAction = {
-                param($eventSender, $e)
-                if ($null -ne $e.Data) {
-                    [void]$Event.MessageData.Add($e.Data)
-                }
-            }
-            $outputEvent = Register-ObjectEvent -InputObject $process -EventName OutputDataReceived -Action $outputAction -MessageData $outputBuffer
-            
-            # Start process and begin async reading
-            $process.Start() | Out-Null
-            $process.BeginOutputReadLine()
-            
-            # Create timer to poll process and update UI (non-blocking)
-            $monitorTimer = New-Object System.Windows.Forms.Timer
-            $monitorTimer.Interval = 100  # Check every 100ms
-            
-            $monitorTimer.Add_Tick({
-                    # Process any buffered output lines
-                    while ($outputBuffer.Count -gt 0) {
-                        $line = $null
-                        try {
-                            $line = $outputBuffer[0]
-                            $outputBuffer.RemoveAt(0)
-                        }
-                        catch { }
-                    
-                        if ($line -and $line -match '^\s*(\d+)%') {
-                            $percent = [int]$Matches[1]
-                            # Only update if progress increased (prevents jumps back)
-                            if ($percent -ge $extractionState.LastPercent) {
-                                $extractionState.LastPercent = $percent
-                                Update-ProgressForm -Form $progressForm -Percentage $percent -Status "$percent% complete"
-                            }
-                        }
-                    }
-                    
-                    # Update extracted folder size (every 1 second to avoid performance hit)
-                    $now = [DateTime]::Now
-                    if (($now - $extractionState.LastSizeCheck).TotalSeconds -ge 1) {
-                        $extractionState.LastSizeCheck = $now
-                        $destPath = $progressForm.Tag.DestPath
-                        $totalSize = $progressForm.Tag.TotalSize
-                        if ($destPath -and (Test-Path -LiteralPath $destPath -ErrorAction SilentlyContinue)) {
-                            try {
-                                $extractedSize = (Get-ChildItem -LiteralPath $destPath -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
-                                if ($null -eq $extractedSize) { $extractedSize = 0 }
-                                $extractedMB = [math]::Round($extractedSize / 1MB, 1)
-                                if ($totalSize -gt 0) {
-                                    $totalMB = [math]::Round($totalSize / 1MB, 1)
-                                    $progressForm.Tag.SizeLabel.Text = "Extracted: $extractedMB MB / $totalMB MB"
-                                }
-                                else {
-                                    $progressForm.Tag.SizeLabel.Text = "Extracted: $extractedMB MB"
-                                }
-                            }
-                            catch { }
-                        }
-                    }
-                
-                    # Check for cancellation
-                    if ($progressForm.Tag.Cancelled) {
-                        Write-LogMessage "User cancelled extraction."
-                        try { $process.Kill() } catch {}
-                        $monitorTimer.Stop()
-                        $extractionState.Completed = $true
-                        $extractionState.ExitCode = -1
-                        $extractionState.Cancelled = $true
-                        $progressForm.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-                    }
-                
-                    # Check if process completed
-                    if ($process.HasExited) {
-                        $monitorTimer.Stop()
-                        $extractionState.Completed = $true
-                        $extractionState.ExitCode = $process.ExitCode
-                        $progressForm.DialogResult = [System.Windows.Forms.DialogResult]::OK
-                    }
-                }.GetNewClosure())
-            
-            # Update status and start timer
-            Update-ProgressForm -Form $progressForm -Status "Extracting with 7-Zip..."
-            $monitorTimer.Start()
-            
-            # ShowDialog blocks but keeps UI responsive (processes messages)
-            $dialogResult = $progressForm.ShowDialog()
-            
-            # Cleanup
-            $monitorTimer.Stop()
-            $monitorTimer.Dispose()
-            Unregister-Event -SourceIdentifier $outputEvent.Name -ErrorAction SilentlyContinue
-            Remove-Job -Id $outputEvent.Id -Force -ErrorAction SilentlyContinue
-            
-            # Wait for process to fully exit if not already
-            if (-not $process.HasExited) {
-                $process.WaitForExit(1000)
-            }
-            
-            $progressForm.Dispose()
-            
-            # Handle cancellation - DO NOT fall back to WinRAR if user cancelled
-            if ($dialogResult -eq [System.Windows.Forms.DialogResult]::Cancel -or $extractionState.Cancelled) {
-                Write-LogMessage "Extraction cancelled by user."
+
+            if ($exitCode -eq 255) {
+                Write-LogMessage "Extraction cancelled by user in $($extractor.Name)."
                 return $null
             }
-            
-            if ($extractionState.ExitCode -eq 0) { 
-                Write-Host "$($ArchiveType.ToUpper()) extracted successfully with 7-Zip to $DestinationPath"
-                Write-LogMessage "Extracted with 7-Zip successfully."
-                return $DestinationPath 
-            }
-            else {
-                Write-Warning "7-Zip extraction failed with exit code $($extractionState.ExitCode). Trying WinRAR..."
-                Write-LogMessage "7-Zip extraction failed. Exit Code: $($extractionState.ExitCode). Falling back to WinRAR."
-                # Reopen progress for WinRAR
-                $progressForm = Show-ExtractionProgress -ArchiveName $archiveName
-            }
-        }
-        
-        # Fallback to WinRAR (uses Timer-based async monitoring)
-        $winrar = Get-WinRARPath
-        if (-not $winrar) { 
-            if ($progressForm -and -not $progressForm.IsDisposed) {
-                $progressForm.Dispose()
-            }
-            $errMsg = "No archive extractor found (tried 7-Zip and WinRAR). Cannot extract '${ArchivePath}'. Please install 7-Zip or WinRAR."
-            Write-Error $errMsg
-            Write-LogMessage "ERROR: $errMsg"
-            return $null 
-        }
 
-        Write-Host "Extracting with WinRAR..."
-        
-        # Start WinRAR process without -Wait
-        $processArgs = @('x', "`"$ArchivePath`"", "`"$DestinationPath\`"", '-y', '-o+')
-        $winrarProcess = Start-Process -FilePath $winrar -ArgumentList $processArgs -NoNewWindow -PassThru
-        
-        $winrarState = @{ ExitCode = -1; Completed = $false }
-        
-        # Create timer to monitor WinRAR process
-        $winrarTimer = New-Object System.Windows.Forms.Timer
-        $winrarTimer.Interval = 200
-        
-        $winrarTimer.Add_Tick({
-                # Check for cancellation
-                if ($progressForm.Tag.Cancelled) {
-                    Write-LogMessage "User cancelled WinRAR extraction."
-                    try { $winrarProcess.Kill() } catch {}
-                    $winrarTimer.Stop()
-                    $winrarState.Completed = $true
-                    $progressForm.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-                }
-            
-                # Check if process completed
-                if ($winrarProcess.HasExited) {
-                    $winrarTimer.Stop()
-                    $winrarState.Completed = $true
-                    $winrarState.ExitCode = $winrarProcess.ExitCode
-                    $progressForm.DialogResult = [System.Windows.Forms.DialogResult]::OK
-                }
-            }.GetNewClosure())
-        
-        Update-ProgressForm -Form $progressForm -Status "Extracting with WinRAR..."
-        $winrarTimer.Start()
-        
-        $dialogResult = $progressForm.ShowDialog()
-        
-        # Cleanup
-        $winrarTimer.Stop()
-        $winrarTimer.Dispose()
-        $progressForm.Dispose()
-        
-        if ($dialogResult -eq [System.Windows.Forms.DialogResult]::Cancel) {
-            return $null
+            Write-LogMessage "$($extractor.Name) extraction failed with exit code $exitCode. Trying fallback extractor if available."
         }
-        
-        if ($winrarState.ExitCode -ne 0) { 
-            $warnMsg = "WinRAR extraction might have failed for '${ArchivePath}'. Exit Code: $($winrarState.ExitCode)."
-            Write-Warning $warnMsg
-            Write-LogMessage "WARNING: $warnMsg"
-            return $null 
-        } 
-        else { 
-            Write-Host "$($ArchiveType.ToUpper()) extracted successfully with WinRAR to $DestinationPath"
-            Write-LogMessage "Extracted with WinRAR successfully."
-            return $DestinationPath 
+        catch {
+            Write-LogMessage "$($extractor.Name) extraction could not start or complete: $($_.Exception.Message)"
         }
     }
-    catch { 
-        if ($progressForm -and -not $progressForm.IsDisposed) {
-            $progressForm.Close()
-            $progressForm.Dispose()
-        }
-        $errMsg = "Error during extraction process for '${ArchivePath}'. Error: $($_.Exception.Message)"
-        Write-Error $errMsg
-        Write-LogMessage "ERROR: $errMsg"
-        return $null 
-    }
+
+    $errMsg = "Extraction failed. qBitLauncher tried the installed GUI extractors but none completed successfully."
+    Write-LogMessage "ERROR: $errMsg"
+    Show-ThemedMessageBox -Message $errMsg -Title "Extraction Failed" -Icon 'Error' | Out-Null
+    return $null
 }
 
 # -------------------------
@@ -1869,11 +1551,9 @@ function Show-ExecutableSelectionForm {
             $exe = & $getSelectedExe
             if ($exe) {
                 try {
-                    # Don't force RunAs - let the executable request elevation if needed
-                    # This avoids issues with UAC cancellation and security software blocking
-                    Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName
+                    Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -Verb RunAs
                     Invoke-ActionSound -Type Success
-                    & $addLogEntry "Launched: $($exe.Name)"
+                    & $addLogEntry "Launched as admin: $($exe.Name)"
                 }
                 catch {
                     Invoke-ActionSound -Type Error
