@@ -12,14 +12,13 @@ A PowerShell post-download handler for qBittorrent with a themed GUI for extract
 
 ## Features
 
-- 🗜️ **Auto-extraction** - Extracts ZIP, RAR, 7z, ISO, and IMG archives
+- 🗜️ **External extraction** - Extracts ZIP, RAR, 7z, ISO, and IMG archives through the installed 7-Zip or WinRAR GUI
 - 📂 **Custom extraction path** - Choose where to extract with modern folder picker
-- 📊 **Progress bar** - Visual feedback during extraction with cancel support
 - 🔍 **Smart executable discovery** - Finds .exe files with icons, sorted by folder depth
 - ✏️ **Inline rename** - Rename executables directly (F2, double-click, or right-click)
 - 📋 **Activity Log** - Real-time log panel showing all actions
 - 🎨 **Themed GUI** - Dracula dark theme with Light mode option
-- 🛡️ **Run as Administrator** - One-click UAC elevation for installers
+- 🛡️ **Admin launch** - Run selected executables with UAC elevation
 - 🔔 **Action feedback** - Themed dialogs and sound effects for all actions
 - 📦 **Auto-update** - Checks for updates on startup
 
