@@ -1308,6 +1308,18 @@ function Show-ExecutableSelectionForm {
         Write-LogMessage $Message
     }
 
+    $removeListItem = {
+        param([System.Windows.Forms.ListViewItem]$Item)
+        if ($Item) {
+            $index = $Item.Index
+            $listView.Items.Remove($Item)
+            if ($listView.Items.Count -gt 0) {
+                $nextIndex = [Math]::Min($index, $listView.Items.Count - 1)
+                $listView.Items[$nextIndex].Selected = $true
+            }
+        }
+    }
+
     # Log form open
     & $addLogEntry "Form opened"
 
@@ -1527,17 +1539,33 @@ function Show-ExecutableSelectionForm {
     # Helper to get selected executable
     $getSelectedExe = {
         if ($listView.SelectedItems.Count -eq 0) {
-            Show-ThemedMessageBox -Message "Please select an executable first." -Title "No Selection" -Icon 'Warning'
+            Show-ThemedMessageBox -Message "Please select an executable first." -Title "No Selection" -Icon 'Warning' | Out-Null
             return $null
         }
-        $path = $listView.SelectedItems[0].Tag
+        $item = $listView.SelectedItems[0]
+        $path = $item.Tag
         try {
             return Get-Item -LiteralPath $path -ErrorAction Stop
         }
         catch {
-            Show-ThemedMessageBox -Message "Could not access: $path" -Title "Error" -Icon 'Error'
+            & $addLogEntry "Missing file removed from list: $($item.Text) - $path"
+            & $removeListItem $item
+            Show-ThemedMessageBox -Message "File not found:`n$path`n`nIt may have been moved or deleted." -Title "File Missing" -Icon 'Error' | Out-Null
             return $null
         }
+    }
+
+    $startRunnableAsAdmin = {
+        param([System.IO.FileInfo]$File)
+
+        $extension = $File.Extension.ToLowerInvariant()
+        if ($extension -in @('.bat', '.cmd')) {
+            $cmdArgs = "/c `"`"$($File.FullName)`"`""
+            Start-Process -FilePath $env:ComSpec -ArgumentList $cmdArgs -WorkingDirectory $File.DirectoryName -Verb RunAs
+            return
+        }
+
+        Start-Process -FilePath $File.FullName -WorkingDirectory $File.DirectoryName -Verb RunAs
     }
 
     # === Button Row ===
@@ -1551,7 +1579,7 @@ function Show-ExecutableSelectionForm {
             $exe = & $getSelectedExe
             if ($exe) {
                 try {
-                    Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -Verb RunAs
+                    & $startRunnableAsAdmin $exe
                     Invoke-ActionSound -Type Success
                     & $addLogEntry "Launched as admin: $($exe.Name)"
                 }
