@@ -1607,6 +1607,7 @@ function Show-ExecutableSelectionForm {
             try {
                 $exe = Get-Item -LiteralPath $exePath -ErrorAction Stop
                 $desktopPath = [System.Environment]::GetFolderPath('Desktop')
+                $shortcutDisplayName = $exe.BaseName
                 $shortcutName = $exe.BaseName + ".lnk"
                 $shortcutPath = Join-Path $desktopPath $shortcutName
                 $wshell = New-Object -ComObject WScript.Shell
@@ -1615,8 +1616,8 @@ function Show-ExecutableSelectionForm {
                 $shortcut.WorkingDirectory = $exe.DirectoryName
                 $shortcut.Save()
                 Invoke-ActionSound -Type Success
-                & $addLogEntry "Shortcut: $shortcutName"
-                Show-ThemedMessageBox -Message "Shortcut created on Desktop:`n$shortcutName" -Title "Success" -Icon 'Information'
+                & $addLogEntry "Shortcut: $shortcutDisplayName"
+                Show-ThemedMessageBox -Message "Shortcut created on Desktop:`n$shortcutDisplayName" -Title "Success" -Icon 'Information'
             }
             catch {
                 Invoke-ActionSound -Type Error
