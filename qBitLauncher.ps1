@@ -41,7 +41,7 @@ public const int ICON_BIG = 1;
 # Configuration
 # -------------------------
 # Version and update settings
-$Global:ScriptVersion = "2.2.2"
+$Global:ScriptVersion = "2.2.3"
 $Global:GitHubRawUrl = "https://raw.githubusercontent.com/DeonHolo/qBitLauncher/main/qBitLauncher.ps1"
 $Global:GitHubCommitsUrl = "https://github.com/DeonHolo/qBitLauncher/commits/main"
 
@@ -132,10 +132,28 @@ function Test-UpdateAvailable {
 function Update-Script {
     param([switch]$Restart)
     
+    $updateMutex = $null
+    $hasUpdateLock = $false
+
     try {
+        $updateMutex = New-Object System.Threading.Mutex($false, "Local\qBitLauncher.Update")
+        try {
+            $hasUpdateLock = $updateMutex.WaitOne(0)
+        }
+        catch [System.Threading.AbandonedMutexException] {
+            $hasUpdateLock = $true
+            Write-LogMessage "Recovered abandoned update lock."
+        }
+
+        if (-not $hasUpdateLock) {
+            Write-LogMessage "Update skipped because another qBitLauncher instance is already updating."
+            return $false
+        }
+
         Write-LogMessage "Downloading update from GitHub..."
         $response = Invoke-WebRequest -Uri $Global:GitHubRawUrl -UseBasicParsing -TimeoutSec 30
         $newContent = $response.Content
+        $newContent = $newContent.TrimStart([char]0xFEFF)
         
         # Verify it looks like valid PowerShell
         if ($newContent -notmatch '\$Global:ScriptVersion') {
@@ -173,6 +191,14 @@ function Update-Script {
     catch {
         Write-LogMessage "Update failed: $($_.Exception.Message)"
         return $false
+    }
+    finally {
+        if ($hasUpdateLock -and $updateMutex) {
+            try { $updateMutex.ReleaseMutex() | Out-Null } catch {}
+        }
+        if ($updateMutex) {
+            $updateMutex.Dispose()
+        }
     }
 }
 
