@@ -41,7 +41,7 @@ public const int ICON_BIG = 1;
 # Configuration
 # -------------------------
 # Version and update settings
-$Global:ScriptVersion = "2.2.3"
+$Global:ScriptVersion = "2.2.4"
 $Global:GitHubRawUrl = "https://raw.githubusercontent.com/DeonHolo/qBitLauncher/main/qBitLauncher.ps1"
 $Global:GitHubCommitsUrl = "https://github.com/DeonHolo/qBitLauncher/commits/main"
 
@@ -436,11 +436,13 @@ function Show-ThemedMessageBox {
     $label.Location = New-Object System.Drawing.Point($textLeft, 25)
     $label.Size = New-Object System.Drawing.Size((350 - $textLeft), 60)
     $label.Text = $Message
+    $label.UseMnemonic = $false
     $label.ForeColor = $colors.TextFore
     $form.Controls.Add($label)
     
     # Auto-size form height based on message length
-    $textSize = [System.Windows.Forms.TextRenderer]::MeasureText($Message, $form.Font, [System.Drawing.Size]::new((350 - $textLeft), 0), [System.Windows.Forms.TextFormatFlags]::WordBreak)
+    $textFlags = [System.Windows.Forms.TextFormatFlags]::WordBreak -bor [System.Windows.Forms.TextFormatFlags]::NoPrefix
+    $textSize = [System.Windows.Forms.TextRenderer]::MeasureText($Message, $form.Font, [System.Drawing.Size]::new((350 - $textLeft), 0), $textFlags)
     $requiredHeight = [Math]::Max(180, $textSize.Height + 130)
     $form.Size = New-Object System.Drawing.Size(400, $requiredHeight)
     $label.Size = New-Object System.Drawing.Size((350 - $textLeft), ($requiredHeight - 120))
@@ -1581,17 +1583,50 @@ function Show-ExecutableSelectionForm {
         }
     }
 
-    $startRunnableAsAdmin = {
-        param([System.IO.FileInfo]$File)
+    $testUserCancelledLaunch = {
+        param([System.Exception]$Exception)
+
+        $currentException = $Exception
+        while ($currentException) {
+            if (($currentException -is [System.ComponentModel.Win32Exception]) -and $currentException.NativeErrorCode -eq 1223) {
+                return $true
+            }
+            if ($currentException.Message -match 'operation was canceled by the user') {
+                return $true
+            }
+            $currentException = $currentException.InnerException
+        }
+
+        return $false
+    }
+
+    $startRunnable = {
+        param(
+            [System.IO.FileInfo]$File,
+            [bool]$AsAdmin = $true
+        )
+
+        $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $startInfo.UseShellExecute = $true
+        $startInfo.WorkingDirectory = $File.DirectoryName
+        if ($AsAdmin) {
+            $startInfo.Verb = "runas"
+        }
 
         $extension = $File.Extension.ToLowerInvariant()
         if ($extension -in @('.bat', '.cmd')) {
-            $cmdArgs = "/c `"`"$($File.FullName)`"`""
-            Start-Process -FilePath $env:ComSpec -ArgumentList $cmdArgs -WorkingDirectory $File.DirectoryName -Verb RunAs
-            return
+            $commandProcessor = if ([string]::IsNullOrWhiteSpace($env:ComSpec)) { Join-Path $env:SystemRoot "System32\cmd.exe" } else { $env:ComSpec }
+            $startInfo.FileName = $commandProcessor
+            $startInfo.Arguments = "/d /c `"`"$($File.FullName)`"`""
+        }
+        else {
+            $startInfo.FileName = $File.FullName
         }
 
-        Start-Process -FilePath $File.FullName -WorkingDirectory $File.DirectoryName -Verb RunAs
+        $process = [System.Diagnostics.Process]::Start($startInfo)
+        if (-not $process) {
+            throw "Windows did not return a process handle."
+        }
     }
 
     # === Button Row ===
@@ -1605,11 +1640,34 @@ function Show-ExecutableSelectionForm {
             $exe = & $getSelectedExe
             if ($exe) {
                 try {
-                    & $startRunnableAsAdmin $exe
+                    & $startRunnable $exe $true
                     Invoke-ActionSound -Type Success
                     & $addLogEntry "Launched as admin: $($exe.Name)"
                 }
                 catch {
+                    if (& $testUserCancelledLaunch $_.Exception) {
+                        Invoke-ActionSound -Type Notify
+                        & $addLogEntry "Admin launch cancelled: $($exe.Name)"
+
+                        $fallbackResult = Show-ThemedMessageBox -Message "Administrator launch was cancelled.`n`nRun without administrator privileges instead?" -Title "Launch Cancelled" -Buttons 'YesNo' -Icon 'Question'
+                        if ($fallbackResult -eq [System.Windows.Forms.DialogResult]::Yes) {
+                            try {
+                                & $startRunnable $exe $false
+                                Invoke-ActionSound -Type Success
+                                & $addLogEntry "Launched without admin: $($exe.Name)"
+                            }
+                            catch {
+                                Invoke-ActionSound -Type Error
+                                & $addLogEntry "Launch failed without admin: $($exe.Name) - $($_.Exception.Message)"
+                                Show-ThemedMessageBox -Message "Failed to launch without admin: $($_.Exception.Message)" -Title "Error" -Icon 'Error'
+                            }
+                        }
+                        else {
+                            & $addLogEntry "Launch cancelled: $($exe.Name)"
+                        }
+                        return
+                    }
+
                     Invoke-ActionSound -Type Error
                     & $addLogEntry "Launch failed: $($exe.Name) - $($_.Exception.Message)"
                     Show-ThemedMessageBox -Message "Failed to launch: $($_.Exception.Message)" -Title "Error" -Icon 'Error'
