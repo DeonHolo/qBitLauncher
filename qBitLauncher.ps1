@@ -41,7 +41,7 @@ public const int ICON_BIG = 1;
 # Configuration
 # -------------------------
 # Version and update settings
-$Global:ScriptVersion = "2.2.4"
+$Global:ScriptVersion = "2.2.5"
 $Global:GitHubRawUrl = "https://raw.githubusercontent.com/DeonHolo/qBitLauncher/main/qBitLauncher.ps1"
 $Global:GitHubCommitsUrl = "https://github.com/DeonHolo/qBitLauncher/commits/main"
 
@@ -1600,6 +1600,104 @@ function Show-ExecutableSelectionForm {
         return $false
     }
 
+    $testExecutableRequiresAdmin = {
+        param([System.IO.FileInfo]$File)
+
+        if ($File.Extension -ine '.exe') {
+            return $false
+        }
+
+        try {
+            $bytes = [System.IO.File]::ReadAllBytes($File.FullName)
+            $fileText = [System.Text.Encoding]::ASCII.GetString($bytes)
+            return ($fileText -match 'requestedExecutionLevel[^>]+requireAdministrator')
+        }
+        catch {
+            return $false
+        }
+    }
+
+    $getInternetZoneId = {
+        param([System.IO.FileInfo]$File)
+
+        try {
+            $zoneStream = Get-Content -LiteralPath $File.FullName -Stream Zone.Identifier -ErrorAction Stop
+            $zoneText = $zoneStream -join "`n"
+            if ($zoneText -match 'ZoneId=(\d+)') {
+                return [int]$Matches[1]
+            }
+        }
+        catch {
+            return $null
+        }
+
+        return $null
+    }
+
+    $getSignatureStatus = {
+        param([System.IO.FileInfo]$File)
+
+        if ($File.Extension -ine '.exe') {
+            return "NotChecked"
+        }
+
+        try {
+            return (Get-AuthenticodeSignature -LiteralPath $File.FullName).Status.ToString()
+        }
+        catch {
+            return "Unknown"
+        }
+    }
+
+    $getLaunchDiagnostics = {
+        param([System.IO.FileInfo]$File)
+
+        $zoneId = & $getInternetZoneId $File
+        $signatureStatus = & $getSignatureStatus $File
+
+        [PSCustomObject]@{
+            RequiresAdmin    = (& $testExecutableRequiresAdmin $File)
+            ZoneId           = $zoneId
+            IsInternetMarked = ($null -ne $zoneId -and $zoneId -ge 3)
+            SignatureStatus  = $signatureStatus
+            IsUnsigned       = ($signatureStatus -eq "NotSigned")
+        }
+    }
+
+    $formatLaunchBlockMessage = {
+        param(
+            [string]$Intro,
+            [PSCustomObject]$Diagnostics
+        )
+
+        $lines = @($Intro)
+
+        if ($Diagnostics.RequiresAdmin) {
+            $lines += "This installer declares that it requires administrator privileges."
+        }
+        if ($Diagnostics.IsInternetMarked) {
+            $lines += "Windows marks this file as downloaded from the Internet (ZoneId=$($Diagnostics.ZoneId))."
+        }
+        if ($Diagnostics.IsUnsigned) {
+            $lines += "The file is not digitally signed."
+        }
+        elseif ($Diagnostics.SignatureStatus -and $Diagnostics.SignatureStatus -ne "NotChecked" -and $Diagnostics.SignatureStatus -ne "Valid") {
+            $lines += "Signature status: $($Diagnostics.SignatureStatus)."
+        }
+        if ($Diagnostics.RequiresAdmin) {
+            $lines += ""
+            $lines += "Because it requires admin, running without admin will still trigger Windows elevation/trust checks."
+        }
+
+        return ($lines -join "`n")
+    }
+
+    $clearInternetMark = {
+        param([System.IO.FileInfo]$File)
+
+        Unblock-File -LiteralPath $File.FullName -ErrorAction Stop
+    }
+
     $startRunnable = {
         param(
             [System.IO.FileInfo]$File,
@@ -1647,7 +1745,44 @@ function Show-ExecutableSelectionForm {
                 catch {
                     if (& $testUserCancelledLaunch $_.Exception) {
                         Invoke-ActionSound -Type Notify
-                        & $addLogEntry "Admin launch cancelled: $($exe.Name)"
+                        $diagnostics = & $getLaunchDiagnostics $exe
+                        & $addLogEntry "Admin launch cancelled: $($exe.Name) - RequiresAdmin=$($diagnostics.RequiresAdmin); ZoneId=$($diagnostics.ZoneId); Signature=$($diagnostics.SignatureStatus)"
+
+                        if ($diagnostics.RequiresAdmin) {
+                            $blockMessage = & $formatLaunchBlockMessage "Windows cancelled the administrator launch." $diagnostics
+
+                            if ($diagnostics.IsInternetMarked) {
+                                $unblockMessage = "$blockMessage`n`nRemove the Internet block marker and try again as administrator?`nOnly do this if you trust this installer."
+                                $unblockResult = Show-ThemedMessageBox -Message $unblockMessage -Title "Launch Blocked by Windows" -Buttons 'YesNo' -Icon 'Warning'
+                                if ($unblockResult -eq [System.Windows.Forms.DialogResult]::Yes) {
+                                    try {
+                                        & $clearInternetMark $exe
+                                        & $addLogEntry "Removed Internet block marker: $($exe.Name)"
+                                        & $startRunnable $exe $true
+                                        Invoke-ActionSound -Type Success
+                                        & $addLogEntry "Launched as admin after unblock: $($exe.Name)"
+                                    }
+                                    catch {
+                                        Invoke-ActionSound -Type Error
+                                        if (& $testUserCancelledLaunch $_.Exception) {
+                                            & $addLogEntry "Launch still cancelled after unblock: $($exe.Name)"
+                                            Show-ThemedMessageBox -Message "Windows still cancelled the launch.`n`nThis installer requires administrator approval. Approve the Windows UAC or SmartScreen prompt to run it." -Title "Launch Cancelled" -Icon 'Warning'
+                                        }
+                                        else {
+                                            & $addLogEntry "Launch failed after unblock: $($exe.Name) - $($_.Exception.Message)"
+                                            Show-ThemedMessageBox -Message "Failed to launch after unblock: $($_.Exception.Message)" -Title "Error" -Icon 'Error'
+                                        }
+                                    }
+                                }
+                                else {
+                                    & $addLogEntry "Launch cancelled; Internet block marker kept: $($exe.Name)"
+                                }
+                            }
+                            else {
+                                Show-ThemedMessageBox -Message $blockMessage -Title "Launch Blocked by Windows" -Icon 'Warning'
+                            }
+                            return
+                        }
 
                         $fallbackResult = Show-ThemedMessageBox -Message "Administrator launch was cancelled.`n`nRun without administrator privileges instead?" -Title "Launch Cancelled" -Buttons 'YesNo' -Icon 'Question'
                         if ($fallbackResult -eq [System.Windows.Forms.DialogResult]::Yes) {
@@ -1659,7 +1794,14 @@ function Show-ExecutableSelectionForm {
                             catch {
                                 Invoke-ActionSound -Type Error
                                 & $addLogEntry "Launch failed without admin: $($exe.Name) - $($_.Exception.Message)"
-                                Show-ThemedMessageBox -Message "Failed to launch without admin: $($_.Exception.Message)" -Title "Error" -Icon 'Error'
+                                if (& $testUserCancelledLaunch $_.Exception) {
+                                    $fallbackDiagnostics = & $getLaunchDiagnostics $exe
+                                    $fallbackMessage = & $formatLaunchBlockMessage "Windows cancelled the non-admin launch." $fallbackDiagnostics
+                                    Show-ThemedMessageBox -Message $fallbackMessage -Title "Launch Blocked by Windows" -Icon 'Warning'
+                                }
+                                else {
+                                    Show-ThemedMessageBox -Message "Failed to launch without admin: $($_.Exception.Message)" -Title "Error" -Icon 'Error'
+                                }
                             }
                         }
                         else {
