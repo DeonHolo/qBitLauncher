@@ -43,7 +43,7 @@ public const int ICON_BIG = 1;
 # Configuration
 # -------------------------
 # Version and update settings
-$Global:ScriptVersion = "2.2.5"
+$Global:ScriptVersion = "2.3.0"
 $Global:MainForm = $null
 $Global:GitHubRawUrl = "https://raw.githubusercontent.com/DeonHolo/qBitLauncher/main/qBitLauncher.ps1"
 $Global:GitHubCommitsUrl = "https://github.com/DeonHolo/qBitLauncher/commits/main"
@@ -603,14 +603,15 @@ function Show-ThemedMessageBox {
 function Show-QBittorrentRemoveConfirmForm {
     param(
         [string]$TorrentLabel,
-        [string]$TorrentHash
+        [string]$TorrentHash,
+        [string]$FilePath
     )
 
     $colors = $Global:CurrentTheme
 
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "Remove from qBittorrent"
-    $form.Size = New-Object System.Drawing.Size(560, 260)
+    $form.Size = New-Object System.Drawing.Size(560, 350)
     $form.StartPosition = 'CenterParent'
     $form.FormBorderStyle = 'FixedDialog'
     $form.MaximizeBox = $false
@@ -629,16 +630,24 @@ function Show-QBittorrentRemoveConfirmForm {
 
     $detailsLabel = New-Object System.Windows.Forms.Label
     $detailsLabel.Location = New-Object System.Drawing.Point(20, 52)
-    $detailsLabel.Size = New-Object System.Drawing.Size(510, 76)
-    $detailsLabel.Text = "Torrent: $TorrentLabel`nHash: $TorrentHash`n`nChoose whether qBittorrent should also delete the downloaded files."
+    $detailsLabel.Size = New-Object System.Drawing.Size(510, 110)
+    $detailsLabel.Text = "File Location: $FilePath`nTorrent: $TorrentLabel`nHash: $TorrentHash`n`nChoose whether qBittorrent should also delete the downloaded files."
     $detailsLabel.UseMnemonic = $false
     $detailsLabel.ForeColor = $colors.TextFore
     $form.Controls.Add($detailsLabel)
 
+    $seedingLabel = New-Object System.Windows.Forms.Label
+    $seedingLabel.Location = New-Object System.Drawing.Point(20, 165)
+    $seedingLabel.Size = New-Object System.Drawing.Size(510, 26)
+    $seedingLabel.Text = "Please consider seeding!"
+    $seedingLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $seedingLabel.ForeColor = $colors.TextFore
+    $form.Controls.Add($seedingLabel)
+
     $selection = @{ Value = "Cancel" }
 
     $deleteFilesButton = New-Object System.Windows.Forms.Button
-    $deleteFilesButton.Location = New-Object System.Drawing.Point(85, 160)
+    $deleteFilesButton.Location = New-Object System.Drawing.Point(65, 220)
     $deleteFilesButton.Size = New-Object System.Drawing.Size(150, 36)
     $deleteFilesButton.Text = "Remove + &Delete Files"
     Set-DestructiveButton -Button $deleteFilesButton -Colors $colors
@@ -650,9 +659,9 @@ function Show-QBittorrentRemoveConfirmForm {
     $form.Controls.Add($deleteFilesButton)
 
     $removeOnlyButton = New-Object System.Windows.Forms.Button
-    $removeOnlyButton.Location = New-Object System.Drawing.Point(245, 160)
-    $removeOnlyButton.Size = New-Object System.Drawing.Size(120, 36)
-    $removeOnlyButton.Text = "Remove &Only"
+    $removeOnlyButton.Location = New-Object System.Drawing.Point(230, 220)
+    $removeOnlyButton.Size = New-Object System.Drawing.Size(160, 36)
+    $removeOnlyButton.Text = "Remove Torrent &Only"
     Set-ThemedButton -Button $removeOnlyButton -Colors $colors
     $removeOnlyButton.Add_Click({
             $selection.Value = "RemoveOnly"
@@ -662,7 +671,7 @@ function Show-QBittorrentRemoveConfirmForm {
     $form.Controls.Add($removeOnlyButton)
 
     $cancelButton = New-Object System.Windows.Forms.Button
-    $cancelButton.Location = New-Object System.Drawing.Point(375, 160)
+    $cancelButton.Location = New-Object System.Drawing.Point(405, 220)
     $cancelButton.Size = New-Object System.Drawing.Size(90, 36)
     $cancelButton.Text = "&Cancel"
     $cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
@@ -2705,7 +2714,7 @@ function Show-ExecutableSelectionForm {
                 "Current torrent"
             }
 
-            $choice = Show-QBittorrentRemoveConfirmForm -TorrentLabel $torrentLabel -TorrentHash $TorrentHash
+            $choice = Show-QBittorrentRemoveConfirmForm -TorrentLabel $torrentLabel -TorrentHash $TorrentHash -FilePath $filePathFromQB
             if ($choice -eq "Cancel") {
                 & $addLogEntry "qBittorrent removal cancelled"
                 return
