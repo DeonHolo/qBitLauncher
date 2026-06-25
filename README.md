@@ -22,6 +22,8 @@ A PowerShell post-download handler for qBittorrent with a themed GUI for extract
 - 🔔 **Action feedback** - Themed dialogs and sound effects for all actions
 - 📦 **Auto-update** - Checks for updates on startup
 
+- **qBittorrent cleanup** - Remove the torrent from qBittorrent after extraction/installation, with optional data deletion
+
 ## Requirements
 
 - Windows 10/11
@@ -43,9 +45,10 @@ git clone https://github.com/DeonHolo/qBitLauncher.git
 2. Under **"Run external program"**, enable **"Run on torrent finished"**
 3. Set command:
    ```
-   powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\path\to\qBitLauncher.ps1" "%F"
+   powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\path\to\qBitLauncher.ps1" "%F" "%I" "%N"
    ```
 > **Note:** Replace `C:\path\to\qBitLauncher.ps1` with the actual path where you saved the script.
+> `%I` passes the torrent hash for qBittorrent cleanup. `%N` passes the torrent name for clearer confirmation dialogs.
 
 ### Context Menu Integration (Optional)
 
@@ -80,6 +83,7 @@ When a torrent completes:
 | **Open Folder** | Open in Explorer | `Alt+O` |
 | **Rename** | Rename executable | `Alt+N`, `F2`, double-click |
 | **Settings** | Configure theme | `Alt+T` |
+| **Remove Torrent** | Remove from qBittorrent; optionally delete downloaded files | None |
 | **Close** | Close window | `Alt+C` |
 
 ## Configuration
@@ -87,11 +91,16 @@ When a torrent completes:
 Edit via **Settings** button or `config.json`:
 ```json
 {
-  "Theme": "Dracula"
+  "Theme": "Dracula",
+  "QbittorrentWebUrl": "http://localhost:8080",
+  "QbittorrentUsername": "",
+  "QbittorrentPassword": ""
 }
 ```
 
 **Themes**: `Dracula`, `Light`
+
+**Remove Torrent** uses qBittorrent's local API. qBitLauncher will offer to enable that API the first time cleanup needs it; you do not need to keep a WebUI page open. If qBittorrent requires authentication for localhost, enter the API username/password in **Settings**.
 
 ## Supported Extensions
 

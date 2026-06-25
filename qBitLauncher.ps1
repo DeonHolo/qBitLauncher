@@ -1,7 +1,9 @@
-﻿# qBitLauncher.ps1
+# qBitLauncher.ps1
 
 param(
-    [string]$filePathFromQB 
+    [string]$filePathFromQB,
+    [string]$torrentHashFromQB,
+    [string]$torrentNameFromQB
 )
 
 # -------------------------
@@ -42,6 +44,7 @@ public const int ICON_BIG = 1;
 # -------------------------
 # Version and update settings
 $Global:ScriptVersion = "2.2.5"
+$Global:MainForm = $null
 $Global:GitHubRawUrl = "https://raw.githubusercontent.com/DeonHolo/qBitLauncher/main/qBitLauncher.ps1"
 $Global:GitHubCommitsUrl = "https://github.com/DeonHolo/qBitLauncher/commits/main"
 
@@ -92,6 +95,26 @@ function Set-ThemedButton {
     $Button.FlatStyle = 'Flat'
     $Button.FlatAppearance.BorderSize = 1
     $Button.FlatAppearance.BorderColor = $Colors.Accent
+}
+
+# Helper function for destructive actions that need stronger visual separation
+function Set-DestructiveButton {
+    param(
+        [System.Windows.Forms.Button]$Button,
+        [hashtable]$Colors = $Global:CurrentTheme
+    )
+
+    Set-ThemedButton -Button $Button -Colors $Colors
+    if ($Global:ThemeSelection -eq 'Light') {
+        $Button.BackColor = [System.Drawing.Color]::FromArgb(255, 245, 245)
+        $Button.ForeColor = [System.Drawing.Color]::FromArgb(125, 30, 30)
+        $Button.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(192, 92, 92)
+    }
+    else {
+        $Button.BackColor = $Colors.ButtonBack
+        $Button.ForeColor = $Colors.TextFore
+        $Button.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(181, 91, 91)
+    }
 }
 
 # -------------------------
@@ -211,6 +234,7 @@ function Show-UpdatePrompt {
     $form.Text = "Update Available"
     $form.Size = New-Object System.Drawing.Size(400, 220)
     $form.StartPosition = 'CenterScreen'
+    $form.Add_Load({ Set-FormPositionNearOwner -Form $this })
     $form.FormBorderStyle = 'FixedDialog'
     $form.MaximizeBox = $false
     $form.MinimizeBox = $true
@@ -314,6 +338,12 @@ function Write-LogMessage {
 Write-LogMessage "--------------------------------------------------------"
 Write-LogMessage "Script started: qBitLauncher.ps1"
 Write-LogMessage "Received initial path from qBittorrent: '$filePathFromQB'"
+if (-not [string]::IsNullOrWhiteSpace($torrentHashFromQB)) {
+    Write-LogMessage "Received torrent hash from qBittorrent: '$torrentHashFromQB'"
+}
+if (-not [string]::IsNullOrWhiteSpace($torrentNameFromQB)) {
+    Write-LogMessage "Received torrent name from qBittorrent: '$torrentNameFromQB'"
+}
 # Write-Host suppressed for PS2EXE compatibility
 
 # -------------------------
@@ -321,7 +351,10 @@ Write-LogMessage "Received initial path from qBittorrent: '$filePathFromQB'"
 # -------------------------
 $Global:ConfigFile = Join-Path $Global:ScriptDir "config.json"
 $Global:UserSettings = @{
-    Theme = "Dracula"
+    Theme                 = "Dracula"
+    QbittorrentWebUrl     = "http://localhost:8080"
+    QbittorrentUsername   = ""
+    QbittorrentPassword   = ""
 }
 
 function Get-UserSettings {
@@ -329,6 +362,9 @@ function Get-UserSettings {
         try {
             $json = Get-Content $Global:ConfigFile -Raw | ConvertFrom-Json
             $Global:UserSettings.Theme = if ($json.Theme) { $json.Theme } else { "Dracula" }
+            $Global:UserSettings.QbittorrentWebUrl = if ($json.QbittorrentWebUrl) { $json.QbittorrentWebUrl } else { "http://localhost:8080" }
+            $Global:UserSettings.QbittorrentUsername = if ($json.QbittorrentUsername) { $json.QbittorrentUsername } else { "" }
+            $Global:UserSettings.QbittorrentPassword = if ($json.QbittorrentPassword) { $json.QbittorrentPassword } else { "" }
             Write-LogMessage "Loaded settings from config.json"
         }
         catch {
@@ -378,6 +414,27 @@ function Invoke-ActionSound {
 }
 
 # -------------------------
+# Helper: Center a form on the same monitor as the main form
+# -------------------------
+function Set-FormPositionNearOwner {
+    param([System.Windows.Forms.Form]$Form)
+
+    $owner = $Global:MainForm
+    if ($owner -and $owner.IsHandleCreated) {
+        $screen = [System.Windows.Forms.Screen]::FromControl($owner)
+    }
+    else {
+        $screen = [System.Windows.Forms.Screen]::FromPoint([System.Windows.Forms.Cursor]::Position)
+    }
+
+    $wa = $screen.WorkingArea
+    $x = $wa.X + [math]::Max(0, ($wa.Width  - $Form.Width)  / 2)
+    $y = $wa.Y + [math]::Max(0, ($wa.Height - $Form.Height) / 2)
+    $Form.StartPosition = 'Manual'
+    $Form.Location = New-Object System.Drawing.Point([int]$x, [int]$y)
+}
+
+# -------------------------
 # Helper: Themed Message Box (replaces standard MessageBox)
 # -------------------------
 function Show-ThemedMessageBox {
@@ -396,6 +453,7 @@ function Show-ThemedMessageBox {
     $form.Text = $Title
     $form.Size = New-Object System.Drawing.Size(400, 180)
     $form.StartPosition = 'CenterScreen'
+    $form.Add_Load({ Set-FormPositionNearOwner -Form $this })
     $form.FormBorderStyle = 'FixedDialog'
     $form.MaximizeBox = $false
     $form.MinimizeBox = $true
@@ -533,9 +591,614 @@ function Show-ThemedMessageBox {
         }
     }
     
-    $result = $form.ShowDialog()
+    $owner = $Global:MainForm
+    $result = if ($owner) { $form.ShowDialog($owner) } else { $form.ShowDialog() }
     $form.Dispose()
     return $result
+}
+
+# -------------------------
+# GUI: qBittorrent Removal Confirmation
+# -------------------------
+function Show-QBittorrentRemoveConfirmForm {
+    param(
+        [string]$TorrentLabel,
+        [string]$TorrentHash
+    )
+
+    $colors = $Global:CurrentTheme
+
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = "Remove from qBittorrent"
+    $form.Size = New-Object System.Drawing.Size(560, 260)
+    $form.StartPosition = 'CenterParent'
+    $form.FormBorderStyle = 'FixedDialog'
+    $form.MaximizeBox = $false
+    $form.MinimizeBox = $true
+    $form.BackColor = $colors.FormBack
+    $form.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $form.Add_Shown({ Set-FormIcon -Form $this })
+
+    $titleLabel = New-Object System.Windows.Forms.Label
+    $titleLabel.Location = New-Object System.Drawing.Point(20, 18)
+    $titleLabel.Size = New-Object System.Drawing.Size(510, 26)
+    $titleLabel.Text = "Remove this torrent from qBittorrent?"
+    $titleLabel.ForeColor = $colors.TextFore
+    $titleLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $form.Controls.Add($titleLabel)
+
+    $detailsLabel = New-Object System.Windows.Forms.Label
+    $detailsLabel.Location = New-Object System.Drawing.Point(20, 52)
+    $detailsLabel.Size = New-Object System.Drawing.Size(510, 76)
+    $detailsLabel.Text = "Torrent: $TorrentLabel`nHash: $TorrentHash`n`nChoose whether qBittorrent should also delete the downloaded files."
+    $detailsLabel.UseMnemonic = $false
+    $detailsLabel.ForeColor = $colors.TextFore
+    $form.Controls.Add($detailsLabel)
+
+    $selection = @{ Value = "Cancel" }
+
+    $deleteFilesButton = New-Object System.Windows.Forms.Button
+    $deleteFilesButton.Location = New-Object System.Drawing.Point(85, 160)
+    $deleteFilesButton.Size = New-Object System.Drawing.Size(150, 36)
+    $deleteFilesButton.Text = "Remove + &Delete Files"
+    Set-DestructiveButton -Button $deleteFilesButton -Colors $colors
+    $deleteFilesButton.Add_Click({
+            $selection.Value = "DeleteFiles"
+            $form.DialogResult = [System.Windows.Forms.DialogResult]::Yes
+            $form.Close()
+        }.GetNewClosure())
+    $form.Controls.Add($deleteFilesButton)
+
+    $removeOnlyButton = New-Object System.Windows.Forms.Button
+    $removeOnlyButton.Location = New-Object System.Drawing.Point(245, 160)
+    $removeOnlyButton.Size = New-Object System.Drawing.Size(120, 36)
+    $removeOnlyButton.Text = "Remove &Only"
+    Set-ThemedButton -Button $removeOnlyButton -Colors $colors
+    $removeOnlyButton.Add_Click({
+            $selection.Value = "RemoveOnly"
+            $form.DialogResult = [System.Windows.Forms.DialogResult]::No
+            $form.Close()
+        }.GetNewClosure())
+    $form.Controls.Add($removeOnlyButton)
+
+    $cancelButton = New-Object System.Windows.Forms.Button
+    $cancelButton.Location = New-Object System.Drawing.Point(375, 160)
+    $cancelButton.Size = New-Object System.Drawing.Size(90, 36)
+    $cancelButton.Text = "&Cancel"
+    $cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    Set-ThemedButton -Button $cancelButton -Colors $colors
+    $form.Controls.Add($cancelButton)
+
+    $form.CancelButton = $cancelButton
+    $form.AcceptButton = $deleteFilesButton
+
+    $owner = $Global:MainForm
+    $dialogResult = if ($owner) { $form.ShowDialog($owner) } else { $form.ShowDialog() }
+    if ($dialogResult -eq [System.Windows.Forms.DialogResult]::Cancel) {
+        $selection.Value = "Cancel"
+    }
+    $form.Dispose()
+
+    return $selection.Value
+}
+
+# -------------------------
+# Helper: qBittorrent Local API
+# -------------------------
+function Remove-QBittorrentTorrent {
+    param(
+        [string]$TorrentHash,
+        [bool]$DeleteFiles
+    )
+
+    if ([string]::IsNullOrWhiteSpace($TorrentHash)) {
+        throw "No qBittorrent torrent hash was provided. Update the qBittorrent command to pass %I."
+    }
+
+    $baseUrl = $Global:UserSettings.QbittorrentWebUrl
+    if ([string]::IsNullOrWhiteSpace($baseUrl)) {
+        throw "qBittorrent local API URL is empty. Set it in Settings."
+    }
+
+    $baseUrl = $baseUrl.Trim().TrimEnd('/')
+    $parsedUrl = $null
+    if (-not [System.Uri]::TryCreate($baseUrl, [System.UriKind]::Absolute, [ref]$parsedUrl)) {
+        throw "qBittorrent local API URL is invalid: $baseUrl"
+    }
+
+    $session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+
+    if (-not [string]::IsNullOrWhiteSpace($Global:UserSettings.QbittorrentUsername)) {
+        $loginUri = "$baseUrl/api/v2/auth/login"
+        $loginBody = @{
+            username = $Global:UserSettings.QbittorrentUsername
+            password = $Global:UserSettings.QbittorrentPassword
+        }
+
+        $loginResponse = Invoke-WebRequest -Uri $loginUri -Method Post -Body $loginBody -ContentType 'application/x-www-form-urlencoded' -WebSession $session -UseBasicParsing -TimeoutSec 8 -ErrorAction Stop
+        if ($loginResponse.Content -notmatch '^Ok\.?$') {
+            throw "qBittorrent login failed. Check the local API username and password in Settings."
+        }
+    }
+
+    $deleteUri = "$baseUrl/api/v2/torrents/delete"
+    $deleteBody = @{
+        hashes = $TorrentHash.Trim()
+    }
+    if ($DeleteFiles) {
+        $deleteBody.Add('deleteFiles', 'true')
+    }
+
+    try {
+        Invoke-WebRequest -Uri $deleteUri -Method Post -Body $deleteBody -ContentType 'application/x-www-form-urlencoded' -WebSession $session -UseBasicParsing -TimeoutSec 8 -ErrorAction Stop | Out-Null
+    }
+    catch {
+        $message = $_.Exception.Message
+        if ($message -match 'Unable to connect|actively refused|timed out|No connection could be made|remote server') {
+            throw "Could not connect to qBittorrent's local API at $baseUrl."
+        }
+        if ($message -match 'Unauthorized|Forbidden|401|403') {
+            throw "qBittorrent rejected the request. Enter the local API username/password in qBitLauncher Settings."
+        }
+        throw
+    }
+}
+
+function Get-QBittorrentApiBaseUrl {
+    $baseUrl = $Global:UserSettings.QbittorrentWebUrl
+    if ([string]::IsNullOrWhiteSpace($baseUrl)) {
+        return "http://localhost:8080"
+    }
+
+    return $baseUrl.Trim().TrimEnd('/')
+}
+
+function Get-QBittorrentApiUri {
+    $baseUrl = Get-QBittorrentApiBaseUrl
+    $parsedUrl = $null
+    if ([System.Uri]::TryCreate($baseUrl, [System.UriKind]::Absolute, [ref]$parsedUrl)) {
+        return $parsedUrl
+    }
+
+    return $null
+}
+
+function Test-QBittorrentApiUrlIsLocal {
+    $parsedUrl = Get-QBittorrentApiUri
+    return ($parsedUrl -and $parsedUrl.IsLoopback)
+}
+
+function Get-QBittorrentApiPort {
+    $parsedUrl = Get-QBittorrentApiUri
+    if ($parsedUrl -and $parsedUrl.Port -gt 0) {
+        return $parsedUrl.Port
+    }
+
+    return 8080
+}
+
+function Get-QBittorrentConfigPath {
+    if ([string]::IsNullOrWhiteSpace($env:APPDATA)) {
+        return $null
+    }
+
+    return (Join-Path $env:APPDATA "qBittorrent\qBittorrent.ini")
+}
+
+function Get-QBittorrentWebApiState {
+    $configPath = Get-QBittorrentConfigPath
+    $state = [pscustomobject]@{
+        ConfigPath  = $configPath
+        Exists      = $false
+        Enabled     = $null
+        Port        = $null
+        CloseToTray = $null
+    }
+
+    if ([string]::IsNullOrWhiteSpace($configPath) -or -not (Test-Path -LiteralPath $configPath)) {
+        return $state
+    }
+
+    $state.Exists = $true
+    try {
+        $lines = Get-Content -LiteralPath $configPath -ErrorAction Stop
+        foreach ($line in $lines) {
+            if ($line -match '^WebUI\\Enabled=(.+)$') {
+                $state.Enabled = ($Matches[1].Trim().ToLowerInvariant() -eq 'true')
+            }
+            elseif ($line -match '^WebUI\\Port=(\d+)$') {
+                $state.Port = [int]$Matches[1]
+            }
+            elseif ($line -match '^General\\CloseToTray=(.+)$') {
+                $state.CloseToTray = ($Matches[1].Trim().ToLowerInvariant() -eq 'true')
+            }
+        }
+    }
+    catch {
+        Write-LogMessage "Failed to inspect qBittorrent config: $($_.Exception.Message)"
+    }
+
+    return $state
+}
+
+function Set-QBittorrentIniValue {
+    param(
+        [string[]]$Lines,
+        [string]$Key,
+        [string]$Value
+    )
+
+    $list = New-Object System.Collections.Generic.List[string]
+    $pattern = '^' + [regex]::Escape($Key) + '='
+    
+    foreach ($line in $Lines) {
+        if ($line -notmatch $pattern) {
+            $list.Add($line)
+        }
+    }
+
+    $resultArray = $list.ToArray()
+    $prefIndex = [array]::IndexOf($resultArray, '[Preferences]')
+    if ($prefIndex -ge 0) {
+        $list.Insert($prefIndex + 1, "$Key=$Value")
+    }
+    else {
+        $list.Add('[Preferences]')
+        $list.Add("$Key=$Value")
+    }
+
+    return ,$list.ToArray()
+}
+
+function Enable-QBittorrentLocalApiConfig {
+    param(
+        [int]$Port = 8080
+    )
+
+    $state = Get-QBittorrentWebApiState
+    if (-not $state.Exists) {
+        throw "qBittorrent config was not found at $($state.ConfigPath). Start qBittorrent once, then try again."
+    }
+
+    $lines = @(Get-Content -LiteralPath $state.ConfigPath -ErrorAction Stop)
+    $backupPath = "$($state.ConfigPath).qBitLauncher.bak"
+    Copy-Item -LiteralPath $state.ConfigPath -Destination $backupPath -Force -ErrorAction Stop
+
+    $lines = Set-QBittorrentIniValue -Lines $lines -Key 'WebUI\Enabled' -Value 'true'
+    $lines = Set-QBittorrentIniValue -Lines $lines -Key 'WebUI\Port' -Value ([string]$Port)
+    $lines = Set-QBittorrentIniValue -Lines $lines -Key 'WebUI\HTTPS\Enabled' -Value 'false'
+    $lines = Set-QBittorrentIniValue -Lines $lines -Key 'WebUI\LocalHostAuth' -Value 'false'
+    $lines = Set-QBittorrentIniValue -Lines $lines -Key 'WebUI\Username' -Value 'admin'
+    $lines = Set-QBittorrentIniValue -Lines $lines -Key 'WebUI\Password_PBKDF2' -Value '"@ByteArray(ARQ77eY1NUZaQsuDHbIMCA==:0WMRkYTUWVT9wVvdDtHAjU9b3b7uB8NR1Gur2hmQCvCDpm39Q+PsJRJPaCU51dEiz+dTzh8qbPsL8WkFljQYFQ==)"'
+
+    [System.IO.File]::WriteAllLines($state.ConfigPath, [string[]]$lines, [System.Text.Encoding]::UTF8)
+    Write-LogMessage "Enabled qBittorrent local API in config: $($state.ConfigPath)"
+    return $backupPath
+}
+
+function Get-QBittorrentExecutablePath {
+    try {
+        $runningProcess = Get-Process -Name qbittorrent -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($runningProcess -and $runningProcess.Path -and (Test-Path -LiteralPath $runningProcess.Path)) {
+            return $runningProcess.Path
+        }
+    }
+    catch {
+        Write-LogMessage "Could not read running qBittorrent path: $($_.Exception.Message)"
+    }
+
+    try {
+        $command = Get-Command qbittorrent.exe -ErrorAction SilentlyContinue
+        if ($command -and $command.Source -and (Test-Path -LiteralPath $command.Source)) {
+            return $command.Source
+        }
+    }
+    catch {}
+
+    $candidates = @(
+        (Join-Path $env:ProgramFiles "qBittorrent\qbittorrent.exe"),
+        (Join-Path ${env:ProgramFiles(x86)} "qBittorrent\qbittorrent.exe")
+    )
+
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) {
+            return $candidate
+        }
+    }
+
+    return $null
+}
+
+function Test-QBittorrentProcessRunning {
+    return (@(Get-Process -Name qbittorrent -ErrorAction SilentlyContinue).Count -gt 0)
+}
+
+function Stop-QBittorrentGracefully {
+    param(
+        [int]$TimeoutSeconds = 15
+    )
+
+    $processes = @(Get-Process -Name qbittorrent -ErrorAction SilentlyContinue)
+    if ($processes.Count -eq 0) {
+        return @{ Closed = $true; WasRunning = $false }
+    }
+
+    foreach ($process in $processes) {
+        try {
+            [void]$process.CloseMainWindow()
+        }
+        catch {
+            Write-LogMessage "Could not ask qBittorrent to close: $($_.Exception.Message)"
+        }
+    }
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        [System.Windows.Forms.Application]::DoEvents()
+        Start-Sleep -Milliseconds 300
+        $remaining = @(Get-Process -Name qbittorrent -ErrorAction SilentlyContinue)
+        if ($remaining.Count -eq 0) {
+            return @{ Closed = $true; WasRunning = $true }
+        }
+    } while ((Get-Date) -lt $deadline)
+
+    # Graceful close failed (elevated process or CloseToTray). Try elevated taskkill.
+    Write-LogMessage "Graceful close timed out. Attempting elevated taskkill."
+    try {
+        $killProc = Start-Process -FilePath "taskkill" -ArgumentList "/F /IM qbittorrent.exe" -Verb RunAs -Wait -PassThru -WindowStyle Hidden
+        Start-Sleep -Seconds 2
+        $remaining = @(Get-Process -Name qbittorrent -ErrorAction SilentlyContinue)
+        if ($remaining.Count -eq 0) {
+            Write-LogMessage "Elevated taskkill succeeded."
+            return @{ Closed = $true; WasRunning = $true }
+        }
+    }
+    catch {
+        Write-LogMessage "Elevated taskkill failed: $($_.Exception.Message)"
+    }
+
+    return @{ Closed = $false; WasRunning = $true }
+}
+
+function Show-QBittorrentExitWaitForm {
+    param(
+        [bool]$CloseToTray = $false
+    )
+
+    $colors = $Global:CurrentTheme
+    $result = @{ Value = "Cancel" }
+
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = "Waiting for qBittorrent"
+    $form.Size = New-Object System.Drawing.Size(540, 265)
+    $form.StartPosition = 'CenterScreen'
+    $form.Add_Load({ Set-FormPositionNearOwner -Form $this })
+    $form.FormBorderStyle = 'FixedDialog'
+    $form.MaximizeBox = $false
+    $form.MinimizeBox = $true
+    $form.BackColor = $colors.FormBack
+    $form.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $form.Add_Shown({ Set-FormIcon -Form $this })
+
+    $titleLabel = New-Object System.Windows.Forms.Label
+    $titleLabel.Location = New-Object System.Drawing.Point(22, 18)
+    $titleLabel.Size = New-Object System.Drawing.Size(480, 25)
+    $titleLabel.Text = "qBitLauncher is still holding this torrent session."
+    $titleLabel.ForeColor = $colors.TextFore
+    $titleLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $form.Controls.Add($titleLabel)
+
+    $messageLabel = New-Object System.Windows.Forms.Label
+    $messageLabel.Location = New-Object System.Drawing.Point(22, 52)
+    $messageLabel.Size = New-Object System.Drawing.Size(480, 92)
+    $trayText = if ($CloseToTray) { "qBittorrent is set to close to the tray, so use its tray icon/menu and choose Exit.`n`n" } else { "" }
+    $messageLabel.Text = "${trayText}Exit qBittorrent once. As soon as it is closed, qBitLauncher will enable cleanup and retry Remove Torrent for this same game."
+    $messageLabel.UseMnemonic = $false
+    $messageLabel.ForeColor = $colors.TextFore
+    $form.Controls.Add($messageLabel)
+
+    $statusLabel = New-Object System.Windows.Forms.Label
+    $statusLabel.Location = New-Object System.Drawing.Point(22, 150)
+    $statusLabel.Size = New-Object System.Drawing.Size(480, 24)
+    $statusLabel.Text = "Waiting for qBittorrent to exit..."
+    $statusLabel.ForeColor = $colors.SecondaryText
+    $form.Controls.Add($statusLabel)
+
+    $checkButton = New-Object System.Windows.Forms.Button
+    $checkButton.Location = New-Object System.Drawing.Point(265, 185)
+    $checkButton.Size = New-Object System.Drawing.Size(115, 35)
+    $checkButton.Text = "Check &Again"
+    Set-ThemedButton -Button $checkButton -Colors $colors
+    $checkButton.Add_Click({
+            if (-not (Test-QBittorrentProcessRunning)) {
+                $result.Value = "Exited"
+                $form.Close()
+            }
+            else {
+                $statusLabel.Text = "Still running. Exit qBittorrent from the tray/menu."
+                Invoke-ActionSound -Type Notify
+            }
+        }.GetNewClosure())
+    $form.Controls.Add($checkButton)
+
+    $cancelButton = New-Object System.Windows.Forms.Button
+    $cancelButton.Location = New-Object System.Drawing.Point(390, 185)
+    $cancelButton.Size = New-Object System.Drawing.Size(90, 35)
+    $cancelButton.Text = "&Cancel"
+    $cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    Set-ThemedButton -Button $cancelButton -Colors $colors
+    $form.Controls.Add($cancelButton)
+    $form.CancelButton = $cancelButton
+
+    $waitSeconds = @{ Value = 0 }
+    $timer = New-Object System.Windows.Forms.Timer
+    $timer.Interval = 1000
+    $timer.Add_Tick({
+            if (-not (Test-QBittorrentProcessRunning)) {
+                $result.Value = "Exited"
+                $timer.Stop()
+                $form.Close()
+                return
+            }
+
+            $waitSeconds.Value++
+            $statusLabel.Text = "Still running. Waiting... $($waitSeconds.Value)s"
+        }.GetNewClosure())
+
+    $form.Add_Shown({
+            if (-not (Test-QBittorrentProcessRunning)) {
+                $result.Value = "Exited"
+                $form.Close()
+                return
+            }
+            $timer.Start()
+        }.GetNewClosure())
+    $form.Add_FormClosed({
+            $timer.Stop()
+            $timer.Dispose()
+        }.GetNewClosure())
+
+    $owner = $Global:MainForm
+    if ($owner) { [void]$form.ShowDialog($owner) } else { [void]$form.ShowDialog() }
+    $form.Dispose()
+    return $result.Value
+}
+
+function Start-QBittorrentIfAvailable {
+    param(
+        [string]$ExecutablePath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ExecutablePath) -or -not (Test-Path -LiteralPath $ExecutablePath)) {
+        return $false
+    }
+
+    Start-Process -FilePath $ExecutablePath | Out-Null
+    Write-LogMessage "Started qBittorrent: $ExecutablePath"
+    return $true
+}
+
+function Test-QBittorrentApiEndpointAvailable {
+    $baseUrl = Get-QBittorrentApiBaseUrl
+    try {
+        Invoke-WebRequest -Uri "$baseUrl/api/v2/app/version" -Method Get -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop | Out-Null
+        return $true
+    }
+    catch {
+        $response = $_.Exception.Response
+        if ($response -and ($response.StatusCode -eq 401 -or $response.StatusCode -eq 403)) {
+            return $true
+        }
+        return $false
+    }
+}
+
+function Wait-QBittorrentApiEndpoint {
+    param(
+        [int]$TimeoutSeconds = 12
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        if (Test-QBittorrentApiEndpointAvailable) {
+            return $true
+        }
+        [System.Windows.Forms.Application]::DoEvents()
+        Start-Sleep -Milliseconds 700
+    } while ((Get-Date) -lt $deadline)
+
+    return $false
+}
+
+function Test-QBittorrentConnectionFailureMessage {
+    param([string]$Message)
+    return ($Message -match 'Could not connect|Unable to connect|actively refused|timed out|No connection could be made|remote server')
+}
+
+function Invoke-QBittorrentLocalApiRepairFlow {
+    param(
+        [string]$ErrorMessage,
+        [scriptblock]$RetryAction
+    )
+
+    if (-not (Test-QBittorrentConnectionFailureMessage -Message $ErrorMessage)) {
+        return @{ Status = "NotApplicable"; Message = $ErrorMessage }
+    }
+
+    if (-not (Test-QBittorrentApiUrlIsLocal)) {
+        return @{ Status = "NotApplicable"; Message = "qBitLauncher can only auto-enable qBittorrent's API for localhost URLs. Current URL: $(Get-QBittorrentApiBaseUrl)" }
+    }
+
+    $state = Get-QBittorrentWebApiState
+    if (-not $state.Exists) {
+        return @{ Status = "NotApplicable"; Message = "Could not find qBittorrent.ini at $($state.ConfigPath). Start qBittorrent once, then try again." }
+    }
+
+    # If the WebUI is enabled in the config but the API is not responding,
+    # try to start qBittorrent automatically and wait for the API to come up.
+    if ($state.Enabled -eq $true -and -not (Test-QBittorrentApiEndpointAvailable)) {
+        Write-LogMessage "qBittorrent WebUI is enabled in config but API not responding. Attempting to start qBittorrent process."
+        $exePath = Get-QBittorrentExecutablePath
+        if ($exePath) {
+            Write-LogMessage "Attempting to start qBittorrent at: $exePath"
+            Start-QBittorrentIfAvailable -ExecutablePath $exePath | Out-Null
+            if (Wait-QBittorrentApiEndpoint -TimeoutSeconds 15) {
+                try {
+                    & $RetryAction
+                    return @{ Status = "RetrySucceeded"; Message = "qBittorrent was started and the API responded. Retry succeeded." }
+                }
+                catch {
+                    Write-LogMessage "Retry after auto-start failed: $($_.Exception.Message)"
+                    return @{ Status = "RetryFailed"; Message = $_.Exception.Message }
+                }
+            }
+            else {
+                Write-LogMessage "qBittorrent auto-started but API did not respond within timeout. Proceeding to config repair."
+            }
+        }
+        else {
+            Write-LogMessage "Could not determine qBittorrent executable path to auto-start."
+        }
+    }
+
+    $port = Get-QBittorrentApiPort
+    $enableResult = Show-ThemedMessageBox -Message "qBittorrent's local API is turned off.`n`nqBitLauncher can enable it on localhost port $port and then retry removal. This is a one-time setup and it does not open a browser page.`n`nEnable it now?" -Title "Set Up qBittorrent Cleanup" -Buttons 'YesNo' -Icon 'Question'
+    if ($enableResult -ne [System.Windows.Forms.DialogResult]::Yes) {
+        return @{ Status = "Declined"; Message = "qBittorrent local API setup was cancelled." }
+    }
+
+    $exePath = Get-QBittorrentExecutablePath
+    $closeResult = Stop-QBittorrentGracefully -TimeoutSeconds 5
+    if (-not $closeResult.Closed) {
+        $waitResult = Show-QBittorrentExitWaitForm -CloseToTray ($state.CloseToTray -eq $true)
+        if ($waitResult -ne "Exited") {
+            return @{ Status = "PendingExit"; Message = "qBittorrent local API setup was cancelled while waiting for qBittorrent to exit." }
+        }
+    }
+
+    try {
+        $backupPath = Enable-QBittorrentLocalApiConfig -Port $port
+        if ($backupPath) {
+            Write-LogMessage "qBittorrent config backup created: $backupPath"
+        }
+    }
+    catch {
+        return @{ Status = "Failed"; Message = $_.Exception.Message }
+    }
+
+    [void](Start-QBittorrentIfAvailable -ExecutablePath $exePath)
+    if (-not (Wait-QBittorrentApiEndpoint -TimeoutSeconds 15)) {
+        Show-ThemedMessageBox -Message "qBitLauncher enabled qBittorrent's local API, but it is not responding yet.`n`nStart or reopen qBittorrent, then click Remove Torrent again." -Title "qBittorrent Setup Saved" -Icon 'Information'
+        return @{ Status = "PendingRestart"; Message = "qBittorrent local API was enabled, but qBittorrent needs to be reopened before cleanup can run." }
+    }
+
+    try {
+        & $RetryAction
+        return @{ Status = "RetrySucceeded"; Message = "qBittorrent local API was enabled and the torrent was removed." }
+    }
+    catch {
+        return @{ Status = "RetryFailed"; Message = $_.Exception.Message }
+    }
 }
 
 # -------------------------
@@ -980,6 +1643,7 @@ function Show-ExtractionConfirmForm {
     $form.Text = $Title
     $form.Size = New-Object System.Drawing.Size(700, 250)
     $form.StartPosition = 'CenterScreen'
+    $form.Add_Load({ Set-FormPositionNearOwner -Form $this })
     $form.FormBorderStyle = 'FixedDialog'
     $form.MaximizeBox = $false
     $form.MinimizeBox = $true
@@ -1094,7 +1758,8 @@ function Show-ExtractionConfirmForm {
     $form.AcceptButton = $extractButton
     $form.CancelButton = $cancelButton
 
-    $dialogResult = $form.ShowDialog()
+    $owner = $Global:MainForm
+    $dialogResult = if ($owner) { $form.ShowDialog($owner) } else { $form.ShowDialog() }
     
     if ($dialogResult -eq [System.Windows.Forms.DialogResult]::Yes) {
         $result.Confirmed = $true
@@ -1122,8 +1787,9 @@ function Show-SettingsForm {
     
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "Settings - qBitLauncher"
-    $form.Size = New-Object System.Drawing.Size(400, 300)
+    $form.Size = New-Object System.Drawing.Size(500, 430)
     $form.StartPosition = 'CenterScreen'
+    $form.Add_Load({ Set-FormPositionNearOwner -Form $this })
     $form.FormBorderStyle = 'FixedDialog'
     $form.MaximizeBox = $false
     $form.MinimizeBox = $true
@@ -1134,15 +1800,15 @@ function Show-SettingsForm {
     # Theme label
     $themeLabel = New-Object System.Windows.Forms.Label
     $themeLabel.Location = New-Object System.Drawing.Point(20, 25)
-    $themeLabel.Size = New-Object System.Drawing.Size(100, 25)
+    $themeLabel.Size = New-Object System.Drawing.Size(130, 25)
     $themeLabel.Text = "Theme:"
     $themeLabel.ForeColor = $colors.TextFore
     $form.Controls.Add($themeLabel)
 
     # Theme dropdown
     $themeCombo = New-Object System.Windows.Forms.ComboBox
-    $themeCombo.Location = New-Object System.Drawing.Point(130, 22)
-    $themeCombo.Size = New-Object System.Drawing.Size(220, 25)
+    $themeCombo.Location = New-Object System.Drawing.Point(160, 22)
+    $themeCombo.Size = New-Object System.Drawing.Size(280, 25)
     $themeCombo.DropDownStyle = 'DropDownList'
     $themeCombo.BackColor = $colors.ControlBack
     $themeCombo.ForeColor = $colors.TextFore
@@ -1154,14 +1820,14 @@ function Show-SettingsForm {
     # Version label
     $versionLabel = New-Object System.Windows.Forms.Label
     $versionLabel.Location = New-Object System.Drawing.Point(20, 55)
-    $versionLabel.Size = New-Object System.Drawing.Size(150, 25)
+    $versionLabel.Size = New-Object System.Drawing.Size(180, 25)
     $versionLabel.Text = "Version: v$($Global:ScriptVersion)"
     $versionLabel.ForeColor = $colors.TextFore
     $form.Controls.Add($versionLabel)
 
     # Check for Updates button
     $updateButton = New-Object System.Windows.Forms.Button
-    $updateButton.Location = New-Object System.Drawing.Point(180, 50)
+    $updateButton.Location = New-Object System.Drawing.Point(270, 50)
     $updateButton.Size = New-Object System.Drawing.Size(170, 30)
     $updateButton.Text = "Check for &Updates"
     Set-ThemedButton -Button $updateButton -Colors $colors
@@ -1184,19 +1850,76 @@ function Show-SettingsForm {
         })
     $form.Controls.Add($updateButton)
 
+    $qbLabel = New-Object System.Windows.Forms.Label
+    $qbLabel.Location = New-Object System.Drawing.Point(20, 98)
+    $qbLabel.Size = New-Object System.Drawing.Size(420, 22)
+    $qbLabel.Text = "qBittorrent Local API"
+    $qbLabel.ForeColor = $colors.TextFore
+    $qbLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $form.Controls.Add($qbLabel)
+
+    $webUrlLabel = New-Object System.Windows.Forms.Label
+    $webUrlLabel.Location = New-Object System.Drawing.Point(20, 130)
+    $webUrlLabel.Size = New-Object System.Drawing.Size(130, 25)
+    $webUrlLabel.Text = "API URL:"
+    $webUrlLabel.ForeColor = $colors.TextFore
+    $form.Controls.Add($webUrlLabel)
+
+    $webUrlTextBox = New-Object System.Windows.Forms.TextBox
+    $webUrlTextBox.Location = New-Object System.Drawing.Point(160, 128)
+    $webUrlTextBox.Size = New-Object System.Drawing.Size(280, 25)
+    $webUrlTextBox.Text = $Global:UserSettings.QbittorrentWebUrl
+    $webUrlTextBox.BackColor = $colors.ControlBack
+    $webUrlTextBox.ForeColor = $colors.TextFore
+    $webUrlTextBox.BorderStyle = 'FixedSingle'
+    $form.Controls.Add($webUrlTextBox)
+
+    $usernameLabel = New-Object System.Windows.Forms.Label
+    $usernameLabel.Location = New-Object System.Drawing.Point(20, 165)
+    $usernameLabel.Size = New-Object System.Drawing.Size(130, 25)
+    $usernameLabel.Text = "Username:"
+    $usernameLabel.ForeColor = $colors.TextFore
+    $form.Controls.Add($usernameLabel)
+
+    $usernameTextBox = New-Object System.Windows.Forms.TextBox
+    $usernameTextBox.Location = New-Object System.Drawing.Point(160, 163)
+    $usernameTextBox.Size = New-Object System.Drawing.Size(280, 25)
+    $usernameTextBox.Text = $Global:UserSettings.QbittorrentUsername
+    $usernameTextBox.BackColor = $colors.ControlBack
+    $usernameTextBox.ForeColor = $colors.TextFore
+    $usernameTextBox.BorderStyle = 'FixedSingle'
+    $form.Controls.Add($usernameTextBox)
+
+    $passwordLabel = New-Object System.Windows.Forms.Label
+    $passwordLabel.Location = New-Object System.Drawing.Point(20, 200)
+    $passwordLabel.Size = New-Object System.Drawing.Size(130, 25)
+    $passwordLabel.Text = "Password:"
+    $passwordLabel.ForeColor = $colors.TextFore
+    $form.Controls.Add($passwordLabel)
+
+    $passwordTextBox = New-Object System.Windows.Forms.TextBox
+    $passwordTextBox.Location = New-Object System.Drawing.Point(160, 198)
+    $passwordTextBox.Size = New-Object System.Drawing.Size(280, 25)
+    $passwordTextBox.Text = $Global:UserSettings.QbittorrentPassword
+    $passwordTextBox.UseSystemPasswordChar = $true
+    $passwordTextBox.BackColor = $colors.ControlBack
+    $passwordTextBox.ForeColor = $colors.TextFore
+    $passwordTextBox.BorderStyle = 'FixedSingle'
+    $form.Controls.Add($passwordTextBox)
+
     # Info label
     $infoLabel = New-Object System.Windows.Forms.Label
-    $infoLabel.Location = New-Object System.Drawing.Point(20, 90)
-    $infoLabel.Size = New-Object System.Drawing.Size(340, 35)
-    $infoLabel.Text = "Theme changes apply to new windows.`nSettings are saved to config.json"
+    $infoLabel.Location = New-Object System.Drawing.Point(20, 238)
+    $infoLabel.Size = New-Object System.Drawing.Size(440, 50)
+    $infoLabel.Text = "Pass %I from qBittorrent to enable torrent removal.`nThe local API can be auto-enabled when cleanup first needs it."
     $infoLabel.ForeColor = $colors.SecondaryText
     $infoLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9)
     $form.Controls.Add($infoLabel)
 
     # Keyboard shortcuts section
     $shortcutsLabel = New-Object System.Windows.Forms.Label
-    $shortcutsLabel.Location = New-Object System.Drawing.Point(20, 130)
-    $shortcutsLabel.Size = New-Object System.Drawing.Size(360, 60)
+    $shortcutsLabel.Location = New-Object System.Drawing.Point(20, 295)
+    $shortcutsLabel.Size = New-Object System.Drawing.Size(440, 50)
     $shortcutsLabel.Text = "Keyboard Shortcuts (hold Alt key):`nAlt+R: Run   |   Alt+S: Shortcut   |   Alt+O: Open Folder`nAlt+T: Settings   |   Alt+C: Close"
     $shortcutsLabel.ForeColor = $colors.SecondaryText
     $shortcutsLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9)
@@ -1204,11 +1927,22 @@ function Show-SettingsForm {
 
     # Buttons
     $saveButton = New-Object System.Windows.Forms.Button
-    $saveButton.Location = New-Object System.Drawing.Point(160, 210)
+    $saveButton.Location = New-Object System.Drawing.Point(260, 345)
     $saveButton.Size = New-Object System.Drawing.Size(100, 35)
     $saveButton.Text = "&Save"
     $saveButton.Add_Click({
+            $webUrl = $webUrlTextBox.Text.Trim()
+            $parsedUrl = $null
+            if ([string]::IsNullOrWhiteSpace($webUrl) -or -not [System.Uri]::TryCreate($webUrl, [System.UriKind]::Absolute, [ref]$parsedUrl)) {
+                Invoke-ActionSound -Type Error
+                Show-ThemedMessageBox -Message "Enter a valid qBittorrent local API URL, such as http://localhost:8080." -Title "Invalid Settings" -Icon 'Warning'
+                return
+            }
+
             $Global:UserSettings.Theme = $themeCombo.SelectedItem
+            $Global:UserSettings.QbittorrentWebUrl = $webUrl
+            $Global:UserSettings.QbittorrentUsername = $usernameTextBox.Text.Trim()
+            $Global:UserSettings.QbittorrentPassword = $passwordTextBox.Text
             $Global:ThemeSelection = $Global:UserSettings.Theme
             $Global:CurrentTheme = $Global:Themes[$Global:ThemeSelection]
             if (Save-UserSettings) {
@@ -1219,7 +1953,7 @@ function Show-SettingsForm {
         })
 
     $cancelButton = New-Object System.Windows.Forms.Button
-    $cancelButton.Location = New-Object System.Drawing.Point(270, 210)
+    $cancelButton.Location = New-Object System.Drawing.Point(370, 345)
     $cancelButton.Size = New-Object System.Drawing.Size(100, 35)
     $cancelButton.Text = "&Cancel"
     $cancelButton.Add_Click({
@@ -1234,7 +1968,8 @@ function Show-SettingsForm {
     $form.AcceptButton = $saveButton
     $form.CancelButton = $cancelButton
 
-    $form.ShowDialog() | Out-Null
+    $owner = $Global:MainForm
+    if ($owner) { $form.ShowDialog($owner) | Out-Null } else { $form.ShowDialog() | Out-Null }
     $form.Dispose()
 }
 
@@ -1246,7 +1981,9 @@ function Show-ExecutableSelectionForm {
     param(
         [System.Management.Automation.PSObject[]]$FoundExecutables,
         [string]$WindowTitle = "qBitLauncher Action",
-        [string]$RootFolder = $null  # Root folder for Open Folder button
+        [string]$RootFolder = $null,  # Root folder for Open Folder button
+        [string]$TorrentHash = $null,
+        [string]$TorrentName = $null
     )
     $colors = $Global:CurrentTheme
     
@@ -1257,6 +1994,7 @@ function Show-ExecutableSelectionForm {
 
     # Expanded form size for split layout
     $form = New-Object System.Windows.Forms.Form
+    $Global:MainForm = $form
     $form.Text = $WindowTitle
     $form.Size = New-Object System.Drawing.Size(950, 520)
     $form.StartPosition = 'CenterScreen'
@@ -1267,6 +2005,7 @@ function Show-ExecutableSelectionForm {
     $font = New-Object System.Drawing.Font("Segoe UI", 10)
     $form.Font = $font
     $form.Add_Shown({ Set-FormIcon -Form $this })
+    $toolTip = New-Object System.Windows.Forms.ToolTip
 
     $label = New-Object System.Windows.Forms.Label
     $label.Location = New-Object System.Drawing.Point(10, 10)
@@ -1350,6 +2089,9 @@ function Show-ExecutableSelectionForm {
 
     # Log form open
     & $addLogEntry "Form opened"
+    if (-not [string]::IsNullOrWhiteSpace($TorrentHash)) {
+        & $addLogEntry "qBittorrent torrent linked: $TorrentHash"
+    }
 
     # Add executables with icons (two columns)
     $iconIndex = 0
@@ -1912,10 +2654,119 @@ function Show-ExecutableSelectionForm {
                         $ctrl.FlatAppearance.BorderColor = $newColors.Accent
                     }
                 }
+                if ([string]::IsNullOrWhiteSpace($TorrentHash)) {
+                    Set-ThemedButton -Button $removeTorrentButton -Colors $newColors
+                }
+                else {
+                    Set-DestructiveButton -Button $removeTorrentButton -Colors $newColors
+                }
                 $form.Refresh()
                 & $addLogEntry "Theme changed"
             }
         })
+
+    $removeTorrentButton = New-Object System.Windows.Forms.Button
+    $removeTorrentButton.Location = New-Object System.Drawing.Point(650, $buttonY)
+    $removeTorrentButton.Size = New-Object System.Drawing.Size(175, 35)
+    $removeTorrentButton.Text = "Remove Torrent"
+    $removeTorrentState = @{
+        Busy    = $false
+        Removed = $false
+    }
+    if ([string]::IsNullOrWhiteSpace($TorrentHash)) {
+        Set-ThemedButton -Button $removeTorrentButton -Colors $colors
+        $toolTip.SetToolTip($removeTorrentButton, "Click for qBittorrent setup instructions.")
+    }
+    else {
+        Set-DestructiveButton -Button $removeTorrentButton -Colors $colors
+        $toolTip.SetToolTip($removeTorrentButton, "Remove this torrent from qBittorrent.")
+    }
+    $removeTorrentButton.Add_Click({
+            if ($removeTorrentState.Busy) {
+                return
+            }
+            if ($removeTorrentState.Removed) {
+                Show-ThemedMessageBox -Message "This torrent was already removed from qBittorrent." -Title "qBittorrent" -Icon 'Information'
+                return
+            }
+            if ([string]::IsNullOrWhiteSpace($TorrentHash)) {
+                $commandExample = 'powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\path\to\qBitLauncher.ps1" "%F" "%I" "%N"'
+                Show-ThemedMessageBox -Message "qBittorrent did not pass a torrent hash, so qBitLauncher cannot remove this torrent yet.`n`nUpdate qBittorrent's Run external program command to:`n$commandExample`n`nThen future launches will enable cleanup for that torrent." -Title "qBittorrent Setup Needed" -Icon 'Information'
+                return
+            }
+
+            $torrentLabel = if (-not [string]::IsNullOrWhiteSpace($TorrentName)) {
+                $TorrentName
+            }
+            elseif (-not [string]::IsNullOrWhiteSpace($RootFolder)) {
+                [System.IO.Path]::GetFileName($RootFolder.TrimEnd('\'))
+            }
+            else {
+                "Current torrent"
+            }
+
+            $choice = Show-QBittorrentRemoveConfirmForm -TorrentLabel $torrentLabel -TorrentHash $TorrentHash
+            if ($choice -eq "Cancel") {
+                & $addLogEntry "qBittorrent removal cancelled"
+                return
+            }
+
+            $deleteFiles = ($choice -eq "DeleteFiles")
+            $oldText = $removeTorrentButton.Text
+            $removeTorrentState.Busy = $true
+            $removeTorrentButton.Text = "Removing..."
+            [System.Windows.Forms.Application]::DoEvents()
+
+            try {
+                Remove-QBittorrentTorrent -TorrentHash $TorrentHash -DeleteFiles $deleteFiles
+                Invoke-ActionSound -Type Success
+                $mode = if ($deleteFiles) { "with files" } else { "torrent only" }
+                & $addLogEntry "Removed from qBittorrent ($mode): $torrentLabel"
+                $removeTorrentButton.Text = "Removed"
+                $removeTorrentState.Removed = $true
+                Show-ThemedMessageBox -Message "Removed from qBittorrent:`n$torrentLabel" -Title "qBittorrent" -Icon 'Information'
+            }
+            catch {
+                Invoke-ActionSound -Type Error
+                $errorMessage = $_.Exception.Message
+                & $addLogEntry "qBittorrent removal failed: $errorMessage"
+                $removeTorrentButton.Text = $oldText
+
+                $repairResult = Invoke-QBittorrentLocalApiRepairFlow -ErrorMessage $errorMessage -RetryAction {
+                    Remove-QBittorrentTorrent -TorrentHash $TorrentHash -DeleteFiles $deleteFiles
+                }
+
+                switch ($repairResult.Status) {
+                    "RetrySucceeded" {
+                        Invoke-ActionSound -Type Success
+                        $mode = if ($deleteFiles) { "with files" } else { "torrent only" }
+                        & $addLogEntry "Enabled qBittorrent local API and removed ($mode): $torrentLabel"
+                        $removeTorrentButton.Text = "Removed"
+                        $removeTorrentState.Removed = $true
+                        Show-ThemedMessageBox -Message "qBittorrent cleanup is set up now, and this torrent was removed:`n$torrentLabel" -Title "qBittorrent" -Icon 'Information'
+                    }
+                    "PendingExit" {
+                        & $addLogEntry "qBittorrent must exit before local API setup can continue"
+                    }
+                    "PendingRestart" {
+                        & $addLogEntry "qBittorrent local API enabled; waiting for qBittorrent to reopen"
+                    }
+                    "Declined" {
+                        & $addLogEntry "qBittorrent local API setup cancelled"
+                    }
+                    default {
+                        $message = $repairResult.Message
+                        if ([string]::IsNullOrWhiteSpace($message)) {
+                            $message = $errorMessage
+                        }
+                        Show-ThemedMessageBox -Message "Could not remove the torrent:`n$message" -Title "qBittorrent" -Icon 'Error'
+                    }
+                }
+            }
+            finally {
+                $removeTorrentState.Busy = $false
+            }
+        }.GetNewClosure())
     
     $closeButton = New-Object System.Windows.Forms.Button
     $closeButton.Location = New-Object System.Drawing.Point(835, $buttonY)
@@ -1929,6 +2780,7 @@ function Show-ExecutableSelectionForm {
         Set-ThemedButton -Button $button -Colors $colors
         $form.Controls.Add($button)
     }
+    $form.Controls.Add($removeTorrentButton)
 
     $form.ActiveControl = $listView
 
@@ -1936,6 +2788,8 @@ function Show-ExecutableSelectionForm {
     $form.ShowDialog() | Out-Null
     
     # Cleanup
+    $Global:MainForm = $null
+    $toolTip.Dispose()
     $imageList.Dispose()
     $form.Dispose()
 }
@@ -2035,7 +2889,7 @@ if ($mainFileToProcess) {
                 Write-Host "`nExtraction complete. Searching for runnables..."
                 $runnablesInArchive = Get-AllRunnables -RootFolderPath $extractedDir
                 if ($runnablesInArchive) {
-                    Show-ExecutableSelectionForm -FoundExecutables $runnablesInArchive -WindowTitle "qBitLauncher" -RootFolder $extractedDir
+                    Show-ExecutableSelectionForm -FoundExecutables $runnablesInArchive -WindowTitle "qBitLauncher" -RootFolder $extractedDir -TorrentHash $torrentHashFromQB -TorrentName $torrentNameFromQB
                 }
                 else {
                     Write-Warning "No executables found in the extracted folder: $extractedDir"
@@ -2050,7 +2904,7 @@ if ($mainFileToProcess) {
             Write-Host "`nUsing existing extracted files. Searching for runnables..."
             $runnablesInExisting = Get-AllRunnables -RootFolderPath $existingDir
             if ($runnablesInExisting) {
-                Show-ExecutableSelectionForm -FoundExecutables $runnablesInExisting -WindowTitle "qBitLauncher" -RootFolder $existingDir
+                Show-ExecutableSelectionForm -FoundExecutables $runnablesInExisting -WindowTitle "qBitLauncher" -RootFolder $existingDir -TorrentHash $torrentHashFromQB -TorrentName $torrentNameFromQB
             }
             else {
                 Write-Warning "No executables found in existing folder: $existingDir"
@@ -2064,7 +2918,7 @@ if ($mainFileToProcess) {
             Write-LogMessage "User skipped extraction. Searching for executables in: '$searchFolder'"
             $runnablesInFolder = Get-AllRunnables -RootFolderPath $searchFolder
             if ($runnablesInFolder) {
-                Show-ExecutableSelectionForm -FoundExecutables $runnablesInFolder -WindowTitle "qBitLauncher" -RootFolder $searchFolder
+                Show-ExecutableSelectionForm -FoundExecutables $runnablesInFolder -WindowTitle "qBitLauncher" -RootFolder $searchFolder -TorrentHash $torrentHashFromQB -TorrentName $torrentNameFromQB
             }
             else {
                 Write-Warning "No executables found in folder: $searchFolder"
@@ -2080,7 +2934,7 @@ if ($mainFileToProcess) {
         $runnables = if ($mainFileToProcess -is [array]) { $mainFileToProcess } else { @($mainFileToProcess) }
         Write-LogMessage "Processing one or more runnable files."
         
-        Show-ExecutableSelectionForm -FoundExecutables $runnables -WindowTitle "qBitLauncher" -RootFolder $parentDir
+        Show-ExecutableSelectionForm -FoundExecutables $runnables -WindowTitle "qBitLauncher" -RootFolder $parentDir -TorrentHash $torrentHashFromQB -TorrentName $torrentNameFromQB
     } 
     elseif ($MediaExtensions -contains $ext) {
         Write-LogMessage "File is a media file."
