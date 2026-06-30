@@ -11,7 +11,7 @@ param(
 # -------------------------
 # Determine true execution context (Fix for PS2EXE $PSCommandPath unreliability on new PCs)
 $processPath = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
-$Global:IsCompiledExe = ($processPath -notmatch 'powershell(\_ise)?\.exe$' -and $processPath -notmatch 'pwsh\.exe$')
+$Global:IsCompiledExe = ($processPath -notmatch 'powershell(_ise)?\.exe$' -and $processPath -notmatch 'pwsh\.exe$')
 
 # Determine script directory (handle PS2EXE compiled EXE where $PSScriptRoot is empty)
 $Global:ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } 
@@ -59,7 +59,7 @@ if (-not $Global:IsCompiledExe) {
 # Configuration
 # -------------------------
 # Version and update settings
-$Global:ScriptVersion = "3.3.0"
+$Global:ScriptVersion = "3.3.1"
 $Global:MainForm = $null
 $Global:GitHubRawUrl = "https://raw.githubusercontent.com/DeonHolo/qBitLauncher/main/qBitLauncher.ps1"
 $Global:GitHubCommitsUrl = "https://github.com/DeonHolo/qBitLauncher/commits/main"
@@ -3243,13 +3243,22 @@ function Remove-ContextMenu {
             "HKCU:\Software\Classes\SystemFileAssociations\.rar\shell\qBitLauncher",
             "HKCU:\Software\Classes\SystemFileAssociations\.7z\shell\qBitLauncher",
             "HKCU:\Software\Classes\SystemFileAssociations\.iso\shell\qBitLauncher",
-            "HKCU:\Software\Classes\SystemFileAssociations\.img\shell\qBitLauncher"
+            "HKCU:\Software\Classes\SystemFileAssociations\.img\shell\qBitLauncher",
+            
+            # Legacy paths from older versions (HKEY_CLASSES_ROOT)
+            "Registry::HKEY_CLASSES_ROOT\Directory\shell\qBitLauncher",
+            "Registry::HKEY_CLASSES_ROOT\Directory\Background\shell\qBitLauncher",
+            "Registry::HKEY_CLASSES_ROOT\SystemFileAssociations\.zip\shell\qBitLauncher",
+            "Registry::HKEY_CLASSES_ROOT\SystemFileAssociations\.rar\shell\qBitLauncher",
+            "Registry::HKEY_CLASSES_ROOT\SystemFileAssociations\.7z\shell\qBitLauncher",
+            "Registry::HKEY_CLASSES_ROOT\SystemFileAssociations\.iso\shell\qBitLauncher",
+            "Registry::HKEY_CLASSES_ROOT\SystemFileAssociations\.img\shell\qBitLauncher"
         )
         
         $removed = $false
         foreach ($path in $basePaths) {
             if (Test-Path $path) {
-                Remove-Item -Path $path -Recurse -Force | Out-Null
+                Remove-Item -Path $path -Recurse -Force -ErrorAction SilentlyContinue | Out-Null
                 $removed = $true
             }
         }
