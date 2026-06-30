@@ -600,18 +600,20 @@ function Show-ThemedMessageBox {
 # -------------------------
 # GUI: qBittorrent Removal Confirmation
 # -------------------------
-function Show-QBittorrentRemoveConfirmForm {
+function Show-CleanupConfirmForm {
     param(
         [string]$TorrentLabel,
         [string]$TorrentHash,
-        [string]$FilePath
+        [string]$FilePath,
+        [string]$SourcePath,
+        [bool]$SourceCanDelete = $false
     )
 
     $colors = $Global:CurrentTheme
+    $hasTorrent = -not [string]::IsNullOrWhiteSpace($TorrentHash)
 
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = "Remove from qBittorrent"
-    $form.Size = New-Object System.Drawing.Size(560, 350)
+    $form.Text = "Cleanup"
     $form.StartPosition = 'CenterParent'
     $form.FormBorderStyle = 'FixedDialog'
     $form.MaximizeBox = $false
@@ -620,76 +622,133 @@ function Show-QBittorrentRemoveConfirmForm {
     $form.Font = New-Object System.Drawing.Font("Segoe UI", 10)
     $form.Add_Shown({ Set-FormIcon -Form $this })
 
+    # Tooltip provider for hover info
+    $toolTip = New-Object System.Windows.Forms.ToolTip
+    $toolTip.InitialDelay = 300
+    $toolTip.ReshowDelay = 200
+
     $titleLabel = New-Object System.Windows.Forms.Label
-    $titleLabel.Location = New-Object System.Drawing.Point(20, 18)
-    $titleLabel.Size = New-Object System.Drawing.Size(510, 26)
-    $titleLabel.Text = "Remove this torrent from qBittorrent?"
+    $titleLabel.Location = New-Object System.Drawing.Point(24, 18)
+    $titleLabel.AutoSize = $true
+    $titleLabel.Text = "What would you like to clean up?"
     $titleLabel.ForeColor = $colors.TextFore
-    $titleLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $titleLabel.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
     $form.Controls.Add($titleLabel)
 
-    $detailsLabel = New-Object System.Windows.Forms.Label
-    $detailsLabel.Location = New-Object System.Drawing.Point(20, 52)
-    $detailsLabel.Size = New-Object System.Drawing.Size(510, 110)
-    $detailsLabel.Text = "File Location: $FilePath`nTorrent: $TorrentLabel`nHash: $TorrentHash`n`nChoose whether qBittorrent should also delete the downloaded files."
-    $detailsLabel.UseMnemonic = $false
-    $detailsLabel.ForeColor = $colors.TextFore
-    $form.Controls.Add($detailsLabel)
+    # Build info text — show file location, torrent info, and source path
+    $infoLines = @()
+    if (-not [string]::IsNullOrWhiteSpace($FilePath)) {
+        $infoLines += "File Location: $FilePath"
+    }
+    if ($hasTorrent) {
+        if (-not [string]::IsNullOrWhiteSpace($TorrentLabel)) {
+            $infoLines += "Torrent: $TorrentLabel"
+        }
+        $infoLines += "Hash: $TorrentHash"
+    }
+    if ($SourceCanDelete -and -not [string]::IsNullOrWhiteSpace($SourcePath)) {
+        $sourceFileName = [System.IO.Path]::GetFileName($SourcePath.TrimEnd('\'))
+        $infoLines += "Source: $sourceFileName"
+    }
+    $infoText = ($infoLines -join "`n")
 
-    $seedingLabel = New-Object System.Windows.Forms.Label
-    $seedingLabel.Location = New-Object System.Drawing.Point(20, 165)
-    $seedingLabel.Size = New-Object System.Drawing.Size(510, 26)
-    $seedingLabel.Text = "Please consider seeding!"
-    $seedingLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
-    $seedingLabel.ForeColor = $colors.TextFore
-    $form.Controls.Add($seedingLabel)
+    # Measure info text to auto-size the details area
+    $measureFont = New-Object System.Drawing.Font("Segoe UI", 10)
+    $maxDetailsWidth = 640
+    $textFlags = [System.Windows.Forms.TextFormatFlags]::WordBreak -bor [System.Windows.Forms.TextFormatFlags]::NoPrefix
+    $measuredSize = [System.Windows.Forms.TextRenderer]::MeasureText($infoText, $measureFont, [System.Drawing.Size]::new($maxDetailsWidth, 0), $textFlags)
+    $detailsHeight = [Math]::Max(50, $measuredSize.Height + 10)
+
+    $detailsLabel = New-Object System.Windows.Forms.Label
+    $detailsLabel.Location = New-Object System.Drawing.Point(24, 50)
+    $detailsLabel.Size = New-Object System.Drawing.Size($maxDetailsWidth, $detailsHeight)
+    $detailsLabel.Text = $infoText
+    $detailsLabel.UseMnemonic = $false
+    $detailsLabel.ForeColor = $colors.SecondaryText
+    $form.Controls.Add($detailsLabel)
 
     $selection = @{ Value = "Cancel" }
 
-    $deleteFilesButton = New-Object System.Windows.Forms.Button
-    $deleteFilesButton.Location = New-Object System.Drawing.Point(65, 220)
-    $deleteFilesButton.Size = New-Object System.Drawing.Size(150, 36)
-    $deleteFilesButton.Text = "Remove + &Delete Files"
-    Set-DestructiveButton -Button $deleteFilesButton -Colors $colors
-    $deleteFilesButton.Add_Click({
-            $selection.Value = "DeleteFiles"
+    # Layout: buttons start below the details area
+    $buttonY1 = 50 + $detailsHeight + 16
+    $buttonY2 = $buttonY1 + 46
+    $btnHeight = 38
+    $btnSpacing = 12
+
+    # --- Row 1: Torrent options (evenly spaced across the form) ---
+    $removeTorrentFilesButton = New-Object System.Windows.Forms.Button
+    $removeTorrentFilesButton.Location = New-Object System.Drawing.Point(24, $buttonY1)
+    $removeTorrentFilesButton.Size = New-Object System.Drawing.Size(230, $btnHeight)
+    $removeTorrentFilesButton.Text = "Remove &Torrent + Delete Files"
+    Set-DestructiveButton -Button $removeTorrentFilesButton -Colors $colors
+    $removeTorrentFilesButton.Add_Click({
+            $selection.Value = "DeleteTorrentAndFiles"
             $form.DialogResult = [System.Windows.Forms.DialogResult]::Yes
             $form.Close()
         }.GetNewClosure())
-    $form.Controls.Add($deleteFilesButton)
+    $form.Controls.Add($removeTorrentFilesButton)
 
-    $removeOnlyButton = New-Object System.Windows.Forms.Button
-    $removeOnlyButton.Location = New-Object System.Drawing.Point(230, 220)
-    $removeOnlyButton.Size = New-Object System.Drawing.Size(160, 36)
-    $removeOnlyButton.Text = "Remove Torrent &Only"
-    Set-ThemedButton -Button $removeOnlyButton -Colors $colors
-    $removeOnlyButton.Add_Click({
-            $selection.Value = "RemoveOnly"
+    $removeTorrentOnlyButton = New-Object System.Windows.Forms.Button
+    $removeTorrentOnlyButton.Location = New-Object System.Drawing.Point((24 + 230 + $btnSpacing), $buttonY1)
+    $removeTorrentOnlyButton.Size = New-Object System.Drawing.Size(200, $btnHeight)
+    $removeTorrentOnlyButton.Text = "Remove Torrent &Only"
+    Set-ThemedButton -Button $removeTorrentOnlyButton -Colors $colors
+    $removeTorrentOnlyButton.Add_Click({
+            $selection.Value = "DeleteTorrentOnly"
             $form.DialogResult = [System.Windows.Forms.DialogResult]::No
             $form.Close()
         }.GetNewClosure())
-    $form.Controls.Add($removeOnlyButton)
+    $form.Controls.Add($removeTorrentOnlyButton)
+
+    # --- Row 2: Source deletion + Cancel ---
+    $deleteSourceButton = New-Object System.Windows.Forms.Button
+    $deleteSourceButton.Location = New-Object System.Drawing.Point(24, $buttonY2)
+    $deleteSourceButton.Size = New-Object System.Drawing.Size(160, $btnHeight)
+    $deleteSourceButton.Text = "Delete &Source"
+    if ($SourceCanDelete) {
+        Set-DestructiveButton -Button $deleteSourceButton -Colors $colors
+        # Show full source path on hover instead of cramming it into the button
+        $toolTip.SetToolTip($deleteSourceButton, $SourcePath)
+    }
+    else {
+        Set-ThemedButton -Button $deleteSourceButton -Colors $colors
+        $deleteSourceButton.Enabled = $false
+    }
+    $deleteSourceButton.Add_Click({
+            $selection.Value = "DeleteSource"
+            $form.DialogResult = [System.Windows.Forms.DialogResult]::Retry
+            $form.Close()
+        }.GetNewClosure())
+    $form.Controls.Add($deleteSourceButton)
 
     $cancelButton = New-Object System.Windows.Forms.Button
-    $cancelButton.Location = New-Object System.Drawing.Point(405, 220)
-    $cancelButton.Size = New-Object System.Drawing.Size(90, 36)
+    $cancelButton.Size = New-Object System.Drawing.Size(110, $btnHeight)
     $cancelButton.Text = "&Cancel"
     $cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
     Set-ThemedButton -Button $cancelButton -Colors $colors
     $form.Controls.Add($cancelButton)
 
     $form.CancelButton = $cancelButton
-    $form.AcceptButton = $deleteFilesButton
+
+    # --- Auto-size form to fit content ---
+    $formContentWidth = 24 + 230 + $btnSpacing + 200 + 24
+    $formHeight = $buttonY2 + $btnHeight + 50  # padding below last row + title bar
+    $form.ClientSize = New-Object System.Drawing.Size($formContentWidth, ($buttonY2 + $btnHeight + 20))
+
+    # Position cancel button at the right edge
+    $cancelButton.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 110 - 24), $buttonY2)
 
     $owner = $Global:MainForm
     $dialogResult = if ($owner) { $form.ShowDialog($owner) } else { $form.ShowDialog() }
     if ($dialogResult -eq [System.Windows.Forms.DialogResult]::Cancel) {
         $selection.Value = "Cancel"
     }
+    $toolTip.Dispose()
     $form.Dispose()
 
     return $selection.Value
 }
+
 
 # -------------------------
 # Helper: qBittorrent Local API
@@ -2663,67 +2722,121 @@ function Show-ExecutableSelectionForm {
                         $ctrl.FlatAppearance.BorderColor = $newColors.Accent
                     }
                 }
-                if ([string]::IsNullOrWhiteSpace($TorrentHash)) {
-                    Set-ThemedButton -Button $removeTorrentButton -Colors $newColors
-                }
-                else {
-                    Set-DestructiveButton -Button $removeTorrentButton -Colors $newColors
-                }
+                Set-DestructiveButton -Button $cleanupButton -Colors $newColors
                 $form.Refresh()
                 & $addLogEntry "Theme changed"
             }
         })
 
-    $removeTorrentButton = New-Object System.Windows.Forms.Button
-    $removeTorrentButton.Location = New-Object System.Drawing.Point(650, $buttonY)
-    $removeTorrentButton.Size = New-Object System.Drawing.Size(175, 35)
-    $removeTorrentButton.Text = "Remove Torrent"
-    $removeTorrentState = @{
-        Busy    = $false
-        Removed = $false
+    # === Cleanup Button (unified: torrent removal + source deletion) ===
+    $cleanupButton = New-Object System.Windows.Forms.Button
+    $cleanupButton.Location = New-Object System.Drawing.Point(650, $buttonY)
+    $cleanupButton.Size = New-Object System.Drawing.Size(175, 35)
+    $cleanupButton.Text = "Cleanup"
+    $cleanupState = @{
+        Busy           = $false
+        TorrentRemoved = $false
+        SourceDeleted  = $false
     }
-    if ([string]::IsNullOrWhiteSpace($TorrentHash)) {
-        Set-ThemedButton -Button $removeTorrentButton -Colors $colors
-        $toolTip.SetToolTip($removeTorrentButton, "Click for qBittorrent setup instructions.")
-    }
-    else {
-        Set-DestructiveButton -Button $removeTorrentButton -Colors $colors
-        $toolTip.SetToolTip($removeTorrentButton, "Remove this torrent from qBittorrent.")
-    }
-    $removeTorrentButton.Add_Click({
-            if ($removeTorrentState.Busy) {
+    Set-DestructiveButton -Button $cleanupButton -Colors $colors
+    $toolTip.SetToolTip($cleanupButton, "Remove torrent or delete source files.")
+
+    # Pre-calculate source deletion eligibility
+    $sourcePath = $filePathFromQB
+    $sourceIsValid = (-not [string]::IsNullOrWhiteSpace($sourcePath)) -and (Test-Path -LiteralPath $sourcePath)
+    $sourceIsSameAsRoot = $sourceIsValid -and $RootFolder -and ($sourcePath.TrimEnd('\') -eq $RootFolder.TrimEnd('\'))
+    $sourceCanDelete = $sourceIsValid -and -not $sourceIsSameAsRoot
+
+    $cleanupButton.Add_Click({
+            if ($cleanupState.Busy) {
                 return
             }
-            if ($removeTorrentState.Removed) {
-                Show-ThemedMessageBox -Message "This torrent was already removed from qBittorrent." -Title "qBittorrent" -Icon 'Information'
+
+            # Only build torrent label when there's actually a torrent hash
+            $torrentLabel = $null
+            if (-not [string]::IsNullOrWhiteSpace($TorrentHash)) {
+                $torrentLabel = if (-not [string]::IsNullOrWhiteSpace($TorrentName)) {
+                    $TorrentName
+                }
+                elseif (-not [string]::IsNullOrWhiteSpace($RootFolder)) {
+                    [System.IO.Path]::GetFileName($RootFolder.TrimEnd('\'))
+                }
+                else {
+                    "Current torrent"
+                }
+            }
+
+            # Check if source can still be deleted (it may have been deleted already)
+            $currentSourceCanDelete = $sourceCanDelete -and -not $cleanupState.SourceDeleted -and (Test-Path -LiteralPath $sourcePath)
+
+            $choice = Show-CleanupConfirmForm -TorrentLabel $torrentLabel -TorrentHash $TorrentHash -FilePath $filePathFromQB -SourcePath $sourcePath -SourceCanDelete $currentSourceCanDelete
+            if ($choice -eq "Cancel") {
+                & $addLogEntry "Cleanup cancelled"
+                return
+            }
+
+            # --- Handle Delete Source (no torrent check needed) ---
+            if ($choice -eq "DeleteSource") {
+                if ($cleanupState.SourceDeleted) {
+                    Show-ThemedMessageBox -Message "The source has already been deleted." -Title "Cleanup" -Icon 'Information'
+                    return
+                }
+                if (-not (Test-Path -LiteralPath $sourcePath)) {
+                    $cleanupState.SourceDeleted = $true
+                    Show-ThemedMessageBox -Message "Source no longer exists:`n$sourcePath" -Title "Cleanup" -Icon 'Information'
+                    return
+                }
+
+                $typeLabel = if (Test-Path -LiteralPath $sourcePath -PathType Container) { "folder" } else { "file" }
+                $confirmResult = Show-ThemedMessageBox -Message "Delete the source $typeLabel`?`n`n$sourcePath`n`nThis cannot be undone." -Title "Delete Source" -Buttons 'YesNo' -Icon 'Warning'
+                if ($confirmResult -ne [System.Windows.Forms.DialogResult]::Yes) {
+                    & $addLogEntry "Delete source cancelled"
+                    return
+                }
+
+                try {
+                    if (Test-Path -LiteralPath $sourcePath -PathType Container) {
+                        Remove-Item -LiteralPath $sourcePath -Recurse -Force -ErrorAction Stop
+                    }
+                    else {
+                        Remove-Item -LiteralPath $sourcePath -Force -ErrorAction Stop
+                    }
+                    Invoke-ActionSound -Type Success
+                    $sourceName = [System.IO.Path]::GetFileName($sourcePath.TrimEnd('\'))
+                    & $addLogEntry "Deleted source: $sourcePath"
+                    $cleanupState.SourceDeleted = $true
+                    Show-ThemedMessageBox -Message "Source deleted:`n$sourceName" -Title "Cleanup" -Icon 'Information'
+                }
+                catch {
+                    Invoke-ActionSound -Type Error
+                    & $addLogEntry "Delete source failed: $($_.Exception.Message)"
+                    Show-ThemedMessageBox -Message "Could not delete source:`n$($_.Exception.Message)" -Title "Cleanup" -Icon 'Error'
+                }
+                return
+            }
+
+            # --- Handle Torrent options (check hash first) ---
+            if ($cleanupState.TorrentRemoved) {
+                Show-ThemedMessageBox -Message "This torrent was already removed from qBittorrent." -Title "Cleanup" -Icon 'Information'
                 return
             }
             if ([string]::IsNullOrWhiteSpace($TorrentHash)) {
                 $commandExample = 'powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\path\to\qBitLauncher.ps1" "%F" "%I" "%N"'
-                Show-ThemedMessageBox -Message "qBittorrent did not pass a torrent hash, so qBitLauncher cannot remove this torrent yet.`n`nUpdate qBittorrent's Run external program command to:`n$commandExample`n`nThen future launches will enable cleanup for that torrent." -Title "qBittorrent Setup Needed" -Icon 'Information'
+                Show-ThemedMessageBox -Message "No torrent hash available. This file may not have been launched from qBittorrent (e.g. opened via right-click context menu).`n`nTo enable torrent removal, launch from qBittorrent with this command:`n$commandExample" -Title "Cleanup" -Icon 'Information'
                 return
             }
 
-            $torrentLabel = if (-not [string]::IsNullOrWhiteSpace($TorrentName)) {
-                $TorrentName
-            }
-            elseif (-not [string]::IsNullOrWhiteSpace($RootFolder)) {
-                [System.IO.Path]::GetFileName($RootFolder.TrimEnd('\'))
-            }
-            else {
-                "Current torrent"
-            }
-
-            $choice = Show-QBittorrentRemoveConfirmForm -TorrentLabel $torrentLabel -TorrentHash $TorrentHash -FilePath $filePathFromQB
-            if ($choice -eq "Cancel") {
-                & $addLogEntry "qBittorrent removal cancelled"
+            # Seeding confirmation before torrent removal
+            $seedConfirm = Show-ThemedMessageBox -Message "Please consider seeding!`n`nAre you sure you want to remove this torrent from qBittorrent?" -Title "Cleanup" -Buttons 'YesNo' -Icon 'Question'
+            if ($seedConfirm -ne [System.Windows.Forms.DialogResult]::Yes) {
+                & $addLogEntry "Torrent removal cancelled (seeding prompt)"
                 return
             }
 
-            $deleteFiles = ($choice -eq "DeleteFiles")
-            $oldText = $removeTorrentButton.Text
-            $removeTorrentState.Busy = $true
-            $removeTorrentButton.Text = "Removing..."
+            $deleteFiles = ($choice -eq "DeleteTorrentAndFiles")
+            $oldText = $cleanupButton.Text
+            $cleanupState.Busy = $true
+            $cleanupButton.Text = "Removing..."
             [System.Windows.Forms.Application]::DoEvents()
 
             try {
@@ -2731,15 +2844,15 @@ function Show-ExecutableSelectionForm {
                 Invoke-ActionSound -Type Success
                 $mode = if ($deleteFiles) { "with files" } else { "torrent only" }
                 & $addLogEntry "Removed from qBittorrent ($mode): $torrentLabel"
-                $removeTorrentButton.Text = "Removed"
-                $removeTorrentState.Removed = $true
-                Show-ThemedMessageBox -Message "Removed from qBittorrent:`n$torrentLabel" -Title "qBittorrent" -Icon 'Information'
+                $cleanupState.TorrentRemoved = $true
+                $cleanupButton.Text = $oldText
+                Show-ThemedMessageBox -Message "Removed from qBittorrent:`n$torrentLabel" -Title "Cleanup" -Icon 'Information'
             }
             catch {
                 Invoke-ActionSound -Type Error
                 $errorMessage = $_.Exception.Message
                 & $addLogEntry "qBittorrent removal failed: $errorMessage"
-                $removeTorrentButton.Text = $oldText
+                $cleanupButton.Text = $oldText
 
                 $repairResult = Invoke-QBittorrentLocalApiRepairFlow -ErrorMessage $errorMessage -RetryAction {
                     Remove-QBittorrentTorrent -TorrentHash $TorrentHash -DeleteFiles $deleteFiles
@@ -2750,9 +2863,8 @@ function Show-ExecutableSelectionForm {
                         Invoke-ActionSound -Type Success
                         $mode = if ($deleteFiles) { "with files" } else { "torrent only" }
                         & $addLogEntry "Enabled qBittorrent local API and removed ($mode): $torrentLabel"
-                        $removeTorrentButton.Text = "Removed"
-                        $removeTorrentState.Removed = $true
-                        Show-ThemedMessageBox -Message "qBittorrent cleanup is set up now, and this torrent was removed:`n$torrentLabel" -Title "qBittorrent" -Icon 'Information'
+                        $cleanupState.TorrentRemoved = $true
+                        Show-ThemedMessageBox -Message "qBittorrent cleanup is set up now, and this torrent was removed:`n$torrentLabel" -Title "Cleanup" -Icon 'Information'
                     }
                     "PendingExit" {
                         & $addLogEntry "qBittorrent must exit before local API setup can continue"
@@ -2768,12 +2880,12 @@ function Show-ExecutableSelectionForm {
                         if ([string]::IsNullOrWhiteSpace($message)) {
                             $message = $errorMessage
                         }
-                        Show-ThemedMessageBox -Message "Could not remove the torrent:`n$message" -Title "qBittorrent" -Icon 'Error'
+                        Show-ThemedMessageBox -Message "Could not remove the torrent:`n$message" -Title "Cleanup" -Icon 'Error'
                     }
                 }
             }
             finally {
-                $removeTorrentState.Busy = $false
+                $cleanupState.Busy = $false
             }
         }.GetNewClosure())
     
@@ -2789,7 +2901,7 @@ function Show-ExecutableSelectionForm {
         Set-ThemedButton -Button $button -Colors $colors
         $form.Controls.Add($button)
     }
-    $form.Controls.Add($removeTorrentButton)
+    $form.Controls.Add($cleanupButton)
 
     $form.ActiveControl = $listView
 
