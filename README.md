@@ -48,7 +48,7 @@ The easiest way to install qBitLauncher is to download the compiled executable.
 
 1. **Download the latest `.exe`** from the [GitHub Releases](https://github.com/DeonHolo/qBitLauncher/releases/latest) page.
 2. **Run it** to launch the Setup window and install it to a permanent location.
-   > **Note:** Because this is an open-source tool without an expensive code-signing certificate, Windows SmartScreen may show an "unrecognized app" warning. Click **More Info** -> **Run anyway**.
+   > **Note:** Windows SmartScreen may flag the executable as an unrecognized app because it is from a new publisher. To proceed, simply click **More Info** followed by **Run anyway**.
 3. **Click "Install to qBittorrent"** from the Dashboard.
 
 **For Developers (Source Code):**
