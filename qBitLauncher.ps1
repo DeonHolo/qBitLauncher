@@ -58,6 +58,8 @@ if (-not $Global:IsCompiledExe) {
 # -------------------------
 # Configuration
 # -------------------------
+$ProgressPreference = 'SilentlyContinue'
+
 # Version and update settings
 $Global:ScriptVersion = "3.3.1"
 $Global:MainForm = $null
@@ -88,9 +90,11 @@ function Set-FormIcon {
     if ($Global:AppIcon) {
         $Form.Icon = $Global:AppIcon
         # Also set via SendMessage for proper taskbar display
-        $handle = $Form.Handle
-        [Win32.User32Icon]::SendMessage($handle, [Win32.User32Icon]::WM_SETICON, [IntPtr][Win32.User32Icon]::ICON_BIG, $Global:AppIcon.Handle) | Out-Null
-        [Win32.User32Icon]::SendMessage($handle, [Win32.User32Icon]::WM_SETICON, [IntPtr][Win32.User32Icon]::ICON_SMALL, $Global:AppIcon.Handle) | Out-Null
+        if ("Win32.User32Icon" -as [type]) {
+            $handle = $Form.Handle
+            [Win32.User32Icon]::SendMessage($handle, [Win32.User32Icon]::WM_SETICON, [IntPtr][Win32.User32Icon]::ICON_BIG, $Global:AppIcon.Handle) | Out-Null
+            [Win32.User32Icon]::SendMessage($handle, [Win32.User32Icon]::WM_SETICON, [IntPtr][Win32.User32Icon]::ICON_SMALL, $Global:AppIcon.Handle) | Out-Null
+        }
     }
 }
 
