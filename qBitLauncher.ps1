@@ -3618,11 +3618,11 @@ if (Test-Path -LiteralPath $filePathFromQB -PathType Container) {
             $foundMediaFile = Get-ChildItem -LiteralPath $downloadFolder -File -Recurse | Where-Object { $MediaExtensions -contains $_.Extension.TrimStart('.').ToLowerInvariant() } | Select-Object -First 1
             if ($foundMediaFile) {
                 Write-LogMessage "Found a media file: $($foundMediaFile.Name). Opening folder."
-                Start-Process explorer -ArgumentList "`"$(Split-Path $foundMediaFile.FullName -Parent)`""
+                if ($torrentHashFromQB) { Start-Process explorer -ArgumentList "`"$(Split-Path $foundMediaFile.FullName -Parent)`"" }
             }
             else {
                 Write-LogMessage "No processable files found in '$downloadFolder'."
-                Start-Process explorer -ArgumentList "`"$downloadFolder`""
+                if ($torrentHashFromQB) { Start-Process explorer -ArgumentList "`"$downloadFolder`"" }
             }
         }
     }
@@ -3660,7 +3660,7 @@ if ($mainFileToProcess) {
                 }
                 else {
                     Write-LogMessage "No executables found in the extracted folder: $extractedDir"
-                    Start-Process explorer -ArgumentList "`"$extractedDir`""
+                    if ($torrentHashFromQB) { Start-Process explorer -ArgumentList "`"$extractedDir`"" }
                 }
             }
         }
@@ -3675,7 +3675,7 @@ if ($mainFileToProcess) {
             }
             else {
                 Write-LogMessage "No executables found in existing folder: $existingDir"
-                Start-Process explorer -ArgumentList "`"$existingDir`""
+                if ($torrentHashFromQB) { Start-Process explorer -ArgumentList "`"$existingDir`"" }
             }
         }
         elseif ($extractionResult.SkippedExtraction) {
@@ -3689,12 +3689,12 @@ if ($mainFileToProcess) {
             }
             else {
                 Write-LogMessage "No executables found in folder: $searchFolder"
-                Start-Process explorer -ArgumentList "`"$searchFolder`""
+                if ($torrentHashFromQB) { Start-Process explorer -ArgumentList "`"$searchFolder`"" }
             }
         }
         else {
             Write-LogMessage "User declined extraction. Opening folder: '$parentDir'"
-            Start-Process explorer -ArgumentList "`"$parentDir`""
+            if ($torrentHashFromQB) { Start-Process explorer -ArgumentList "`"$parentDir`"" }
         }
     } 
     elseif ($ext -in @('exe', 'bat', 'cmd') -or $mainFileToProcess -is [array]) {
@@ -3706,13 +3706,13 @@ if ($mainFileToProcess) {
     elseif ($MediaExtensions -contains $ext) {
         Write-LogMessage "File is a media file."
         Write-LogMessage "Media file '${filePath}' is ready."
-        Start-Process explorer -ArgumentList "`"$parentDir`""
+        if ($torrentHashFromQB) { Start-Process explorer -ArgumentList "`"$parentDir`"" }
         Write-LogMessage "Opening containing folder: $parentDir"
     }
     else {
         Write-LogMessage "File is an unhandled type (.$ext)."
         Write-LogMessage "File type .${ext} is not handled explicitly."
-        Start-Process explorer -ArgumentList "`"$parentDir`""
+        if ($torrentHashFromQB) { Start-Process explorer -ArgumentList "`"$parentDir`"" }
         Write-LogMessage "Opening containing folder: $parentDir"
     }
 }
