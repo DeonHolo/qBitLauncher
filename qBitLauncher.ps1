@@ -407,16 +407,28 @@ function Write-LogMessage {
     param([string]$Message)
     $Timestamp = Get-Date -Format "yyyy-MM-dd hh:mm tt"
     $LogEntry = "$Timestamp - $Message"
-    try {
-        # Prepend new entries to top of log file (newest first)
-        $existingContent = if (Test-Path $LogFile) { Get-Content $LogFile -Raw -ErrorAction SilentlyContinue } else { "" }
-        $newContent = "$LogEntry`r`n$existingContent"
-        [System.IO.File]::WriteAllText($LogFile, $newContent)
+    
+    $success = $false
+    for ($i = 0; $i -lt 3; $i++) {
+        try {
+            $existingContent = if (Test-Path -LiteralPath $LogFile) { Get-Content -LiteralPath $LogFile -Raw -ErrorAction SilentlyContinue } else { "" }
+            $newContent = "$LogEntry`r`n$existingContent"
+            [System.IO.File]::WriteAllText($LogFile, $newContent)
+            $success = $true
+            break
+        }
+        catch {
+            Start-Sleep -Milliseconds 50
+        }
     }
-    catch {
-        $FallbackLogDir = Join-Path $env:PUBLIC "Documents"; $FallbackLogFile = Join-Path $FallbackLogDir "qBitLauncher_fallback_log.txt"
-        try { if (-not (Test-Path $FallbackLogDir)) { New-Item -ItemType Directory -Path $FallbackLogDir -Force -ErrorAction SilentlyContinue | Out-Null }; Add-Content -Path $FallbackLogFile -Value "$Timestamp - FALLBACK: $Message (Original log failed: $($_.Exception.Message))" -ErrorAction SilentlyContinue } catch {}
-        Write-Warning "Failed to write to primary log file: $LogFile. Error: $($_.Exception.Message)"
+    
+    if (-not $success) {
+        $FallbackLogDir = Join-Path $env:PUBLIC "Documents"
+        $FallbackLogFile = Join-Path $FallbackLogDir "qBitLauncher_fallback_log.txt"
+        try { 
+            if (-not (Test-Path -LiteralPath $FallbackLogDir)) { New-Item -ItemType Directory -Path $FallbackLogDir -Force -ErrorAction SilentlyContinue | Out-Null }
+            Add-Content -Path $FallbackLogFile -Value "$Timestamp - FALLBACK: $Message (Original log failed)" -ErrorAction SilentlyContinue 
+        } catch {}
     }
 }
 
