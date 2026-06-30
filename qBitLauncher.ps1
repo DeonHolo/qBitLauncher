@@ -232,14 +232,27 @@ function Update-Script {
                 Write-LogMessage "Downloading $downloadUrl to $updateExePath"
                 Invoke-WebRequest -Uri $downloadUrl -OutFile $updateExePath -UseBasicParsing -TimeoutSec 60
                 
+                # Reconstruct arguments to pass back to the restarted executable
+                $argsStr = ""
+                if ($filePathFromQB) { $argsStr += "`"$filePathFromQB`" " }
+                if ($torrentHashFromQB) { $argsStr += "`"$torrentHashFromQB`" " }
+                if ($torrentNameFromQB) { $argsStr += "`"$torrentNameFromQB`" " }
+
                 # Create a batch script to swap the files
                 $batPath = Join-Path $env:TEMP "qBitLauncher_updater.bat"
                 $batContent = @"
 @echo off
 echo Waiting for qBitLauncher to close...
-ping 127.0.0.1 -n 4 > nul
-move /y "$updateExePath" "$scriptPath"
-start "" "$scriptPath"
+set retries=15
+:retry
+ping 127.0.0.1 -n 2 > nul
+move /y "$updateExePath" "$scriptPath" > nul 2>&1
+if not exist "$updateExePath" goto launch
+set /a retries-=1
+if %retries% gtr 0 goto retry
+
+:launch
+start "" "$scriptPath" $argsStr
 del "%~f0"
 "@
                 [IO.File]::WriteAllText($batPath, $batContent, [System.Text.Encoding]::ASCII)
