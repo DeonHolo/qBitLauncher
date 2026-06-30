@@ -115,6 +115,16 @@ Edit via **Settings** button or `config.json`:
 - **GUI**: Real-time Activity Log panel
 - **File**: `qBitLauncher_log.txt`
 
+## Development & Auto-Versioning
+
+This project uses an automated GitHub Actions workflow (`version-bump.yml`) to manage semantic versioning. When pushing to the `main` branch, include one of the following keywords in your commit message to automatically bump the version:
+
+- `feat:` - Increments the MINOR version (e.g., 1.2.3 → 1.3.0). Rolls over to a new MAJOR version if MINOR exceeds 9.
+- `fix:` - Increments the PATCH version (e.g., 1.2.3 → 1.2.4). Rolls over to a new MINOR version if PATCH exceeds 9.
+- `BREAKING:` - Increments the MAJOR version (e.g., 1.2.3 → 2.0.0).
+
+The workflow will automatically update the `$Global:ScriptVersion` inside `qBitLauncher.ps1`, create a new commit, and push it. The script's built-in auto-updater will then detect this new version and prompt users to update.
+
 ## License
 
 MIT License - see [LICENSE](LICENSE)
