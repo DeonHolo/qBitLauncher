@@ -1,0 +1,105 @@
+name: Auto-Version & Release
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  bump-version:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      new_version: ${{ steps.calc_version.outputs.new }}
+      version_changed: ${{ steps.check_change.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+      
+      - name: Get current version
+        id: get_version
+        run: |
+          CURRENT_VERSION=$(grep -oP '\$Global:ScriptVersion\s*=\s*"\K[^"]+' qBitLauncher.ps1)
+          echo "current=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+      
+      - name: Calculate new version
+        id: calc_version
+        env:
+          COMMITS_JSON: ${{ toJson(github.event.commits.*.message) }}
+        run: |
+          CURRENT="${{ steps.get_version.outputs.current }}"
+          IFS='.' read -ra PARTS <<< "$CURRENT"
+          MAJOR=${PARTS[0]:-1}
+          MINOR=${PARTS[1]:-0}
+          PATCH=${PARTS[2]:-0}
+          
+          # Check all commit messages in the push
+          if echo "$COMMITS_JSON" | grep -q "BREAKING:"; then
+            MAJOR=$((MAJOR + 1))
+            MINOR=0
+            PATCH=0
+          elif echo "$COMMITS_JSON" | grep -q "feat:"; then
+            MINOR=$((MINOR + 1))
+            PATCH=0
+          elif echo "$COMMITS_JSON" | grep -q "fix:"; then
+            PATCH=$((PATCH + 1))
+          fi
+          
+          NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+          echo "new=$NEW_VERSION" >> $GITHUB_OUTPUT
+          
+      - name: Check if changed
+        id: check_change
+        run: |
+          if [ "${{ steps.get_version.outputs.current }}" != "${{ steps.calc_version.outputs.new }}" ]; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+          
+      - name: Update version, commit, and tag
+        if: steps.check_change.outputs.changed == 'true'
+        run: |
+          NEW_VERSION="${{ steps.calc_version.outputs.new }}"
+          sed -i 's/\$Global:ScriptVersion = "[^"]*"/\$Global:ScriptVersion = "'"$NEW_VERSION"'"/' qBitLauncher.ps1
+          
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add qBitLauncher.ps1
+          git commit -m "chore: bump version to $NEW_VERSION"
+          
+          # Create tag
+          git tag "v$NEW_VERSION"
+          
+          # Push commit and tags
+          git push origin main
+          git push origin "v$NEW_VERSION"
+
+  build-release:
+    needs: bump-version
+    if: needs.bump-version.outputs.version_changed == 'true'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/v${{ needs.bump-version.outputs.new_version }}
+          
+      - name: Install PS2EXE
+        run: Install-Module -Name PS2EXE -Scope CurrentUser -Force
+        shell: powershell
+
+      - name: Compile Executable
+        run: ps2exe -inputFile "qBitLauncher.ps1" -outputFile "qBitLauncher.exe" -iconFile "qBitLauncher Logo.ico" -noConsole
+        shell: powershell
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ needs.bump-version.outputs.new_version }}
+          name: Release v${{ needs.bump-version.outputs.new_version }}
+          files: qBitLauncher.exe
+          body: Automated release build for qBitLauncher v${{ needs.bump-version.outputs.new_version }}.
