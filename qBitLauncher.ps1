@@ -231,7 +231,8 @@ del "%~f0"
                 [IO.File]::WriteAllText($batPath, $batContent, [System.Text.Encoding]::ASCII)
                 
                 Write-LogMessage "Starting updater batch script and exiting."
-                Start-Process -FilePath "cmd.exe" -ArgumentList "/c `"$batPath`"" -WindowStyle Hidden
+                $wsh = New-Object -ComObject WScript.Shell
+                $wsh.Run("cmd.exe /c `"$batPath`"", 0, $false) | Out-Null
                 exit
                 
             } catch {
@@ -3010,6 +3011,30 @@ function Install-QBittorrentIntegration {
         
         # Parse and update the ini file
         $iniLines = [System.IO.File]::ReadAllLines($iniPath)
+        
+        # Check current state first
+        $isAlreadyInstalled = $false
+        $inAutoRunCheck = $false
+        foreach ($line in $iniLines) {
+            if ($line -match '^\[(.*)\]$') {
+                $inAutoRunCheck = ($line -eq '[AutoRun]')
+            } elseif ($inAutoRunCheck) {
+                if ($line -match '^program\s*=(.*)$') {
+                    if ($Matches[1] -match 'qBitLauncher') {
+                        $isAlreadyInstalled = $true
+                        break
+                    }
+                }
+            }
+        }
+        
+        if ($isAlreadyInstalled) {
+            $confirm = Show-ThemedMessageBox -Message "qBitLauncher is already integrated with qBittorrent.`n`nDo you want to reinstall or update the integration?" -Title "Already Installed" -Icon 'Information' -Buttons 'YesNo'
+            if ($confirm -ne 'Yes') {
+                return $true
+            }
+        }
+        
         $newLines = @()
         $inAutoRun = $false
         $foundAutoRun = $false
@@ -3135,6 +3160,33 @@ function Remove-QBittorrentIntegration {
 
     try {
         $iniLines = [System.IO.File]::ReadAllLines($iniPath)
+        
+        # Check current state first
+        $isAlreadyInstalled = $false
+        $inAutoRunCheck = $false
+        foreach ($line in $iniLines) {
+            if ($line -match '^\[(.*)\]$') {
+                $inAutoRunCheck = ($line -eq '[AutoRun]')
+            } elseif ($inAutoRunCheck) {
+                if ($line -match '^program\s*=(.*)$') {
+                    if ($Matches[1] -match 'qBitLauncher') {
+                        $isAlreadyInstalled = $true
+                        break
+                    }
+                }
+            }
+        }
+        
+        if (-not $isAlreadyInstalled) {
+            Show-ThemedMessageBox -Message "qBitLauncher is not currently integrated with qBittorrent.`n`nNothing to remove." -Title "Info" -Icon 'Information'
+            return $true
+        }
+        
+        $confirm = Show-ThemedMessageBox -Message "This will remove qBitLauncher from qBittorrent's Run-on-Completion settings.`n`nAre you sure you want to proceed?" -Title "Remove Integration" -Icon 'Warning' -Buttons 'YesNo'
+        if ($confirm -ne 'Yes') {
+            return $true
+        }
+        
         $newLines = @()
         $inAutoRun = $false
         $updated = $false
