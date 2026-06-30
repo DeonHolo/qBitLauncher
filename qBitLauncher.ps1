@@ -13,31 +13,40 @@ param(
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
-# Hide the PowerShell console window (show only GUI)
-Add-Type -Name Window -Namespace Console -MemberDefinition '
-[DllImport("Kernel32.dll")]
-public static extern IntPtr GetConsoleWindow();
-[DllImport("user32.dll")]
-public static extern bool ShowWindow(IntPtr hWnd, Int32 nCmdShow);
-'
-$consoleWindow = [Console.Window]::GetConsoleWindow()
-[Console.Window]::ShowWindow($consoleWindow, 0) | Out-Null  # 0 = SW_HIDE
+# $isExe = $false
+if ($PSCommandPath) {
+    $isExe = $PSCommandPath.EndsWith(".exe", [System.StringComparison]::OrdinalIgnoreCase)
+}
 
-# Set AppUserModelID for proper taskbar icon (separates from PowerShell)
-Add-Type -Name Shell32 -Namespace Win32 -MemberDefinition '
-[DllImport("shell32.dll", SetLastError = true)]
-public static extern void SetCurrentProcessExplicitAppUserModelID([MarshalAs(UnmanagedType.LPWStr)] string AppID);
-'
-[Win32.Shell32]::SetCurrentProcessExplicitAppUserModelID("qBitLauncher.App")
+if (-not $isExe) {
+    # Hide the PowerShell console window (show only GUI)
+    Add-Type -Name Window -Namespace Console -MemberDefinition '
+    [DllImport("Kernel32.dll")]
+    public static extern IntPtr GetConsoleWindow();
+    [DllImport("user32.dll")]
+    public static extern bool ShowWindow(IntPtr hWnd, Int32 nCmdShow);
+    '
+    $consoleWindow = [Console.Window]::GetConsoleWindow()
+    [Console.Window]::ShowWindow($consoleWindow, 0) | Out-Null  # 0 = SW_HIDE
 
-# Add SendMessage for proper taskbar icon support
-Add-Type -Name User32Icon -Namespace Win32 -MemberDefinition '
-[DllImport("user32.dll", CharSet = CharSet.Auto)]
-public static extern IntPtr SendMessage(IntPtr hWnd, int Msg, IntPtr wParam, IntPtr lParam);
-public const int WM_SETICON = 0x80;
-public const int ICON_SMALL = 0;
-public const int ICON_BIG = 1;
-'
+    # Set AppUserModelID for proper taskbar icon (separates from PowerShell)
+    Add-Type -Name Shell32 -Namespace Win32 -MemberDefinition '
+    [DllImport("shell32.dll", SetLastError = true)]
+    public static extern void SetCurrentProcessExplicitAppUserModelID([MarshalAs(UnmanagedType.LPWStr)] string AppID);
+    '
+    try {
+        [Win32.Shell32]::SetCurrentProcessExplicitAppUserModelID("qBitLauncher.App")
+    } catch {}
+
+    # Win32 API for setting form icons properly to avoid taskbar glitches
+    Add-Type -Name User32Icon -Namespace Win32 -MemberDefinition '
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    public static extern IntPtr SendMessage(IntPtr hWnd, int Msg, IntPtr wParam, IntPtr lParam);
+    public const int WM_SETICON = 128;
+    public const int ICON_SMALL = 0;
+    public const int ICON_BIG = 1;
+    '
+}
 
 # -------------------------
 # Configuration
@@ -2261,19 +2270,22 @@ function Show-ExecutableSelectionForm {
     $listView.ContextMenuStrip = $contextMenu
 
     # === Custom Column Resizing with Visible Divider ===
-    # Permanently disable horizontal scrollbar using ListView style
-    Add-Type -Name ListViewStyleHelper -Namespace Win32 -MemberDefinition '
-        [DllImport("user32.dll", SetLastError = true)]
-        public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
-        [DllImport("user32.dll", SetLastError = true)]
-        public static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
-        public const int GWL_STYLE = -16;
-        public const int LVS_NOHSCROLL = 0x8000;
-    ' -ErrorAction SilentlyContinue
-    
-    # Add LVS_NOHSCROLL style to permanently remove horizontal scrollbar
-    $currentStyle = [Win32.ListViewStyleHelper]::GetWindowLong($listView.Handle, [Win32.ListViewStyleHelper]::GWL_STYLE)
-    [Win32.ListViewStyleHelper]::SetWindowLong($listView.Handle, [Win32.ListViewStyleHelper]::GWL_STYLE, $currentStyle -bor [Win32.ListViewStyleHelper]::LVS_NOHSCROLL) | Out-Null
+    # Permanently disable horizontal scrollbar using ListView style (only if not exe to avoid csc.exe flash)
+    if (-not $isExe) {
+        Add-Type -Name ListViewStyleHelper -Namespace Win32 -MemberDefinition '
+            [DllImport("user32.dll", SetLastError = true)]
+            public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+            [DllImport("user32.dll", SetLastError = true)]
+            public static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+            public const int GWL_STYLE = -16;
+            public const int LVS_NOHSCROLL = 0x8000;
+        ' -ErrorAction SilentlyContinue
+        
+        try {
+            $currentStyle = [Win32.ListViewStyleHelper]::GetWindowLong($listView.Handle, [Win32.ListViewStyleHelper]::GWL_STYLE)
+            [Win32.ListViewStyleHelper]::SetWindowLong($listView.Handle, [Win32.ListViewStyleHelper]::GWL_STYLE, $currentStyle -bor [Win32.ListViewStyleHelper]::LVS_NOHSCROLL) | Out-Null
+        } catch {}
+    }
     
     # Set column widths - use very conservative sizing
     $usableWidth = $listView.ClientSize.Width - 20  # Large buffer to be safe
