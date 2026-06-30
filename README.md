@@ -25,8 +25,7 @@ A PowerShell post-download handler for qBittorrent with a themed GUI for extract
 - 🛡️ **Admin launch** - Run selected executables with UAC elevation
 - 🔔 **Action feedback** - Themed dialogs and sound effects for all actions
 - 📦 **Auto-update** - Checks for updates on startup
-
-- **qBittorrent cleanup** - Remove the torrent from qBittorrent after extraction/installation, with optional data deletion
+- 🧹 **qBittorrent cleanup** - Remove the torrent from qBittorrent after extraction/installation, with optional data deletion
 
 ## Requirements
 
