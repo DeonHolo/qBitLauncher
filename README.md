@@ -8,15 +8,16 @@ An automated post-download workflow manager for qBittorrent and Windows Explorer
 
 qBitLauncher eliminates the need to manually navigate directories and extract archives after a torrent completes. It automatically intercepts finished downloads, handles extraction, and surfaces the primary executables in a clean GUI.
 
-### Core Capabilities
+![PowerShell](https://img.shields.io/badge/PowerShell-5.1+-blue?logo=powershell)
+![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D6?logo=windows)
+![License](https://img.shields.io/badge/License-MIT-green)
+
+### What It Does
 - **Automated Extraction Intercept**: Hooks into qBittorrent's "Run on torrent finished" event to instantly prompt extraction for `.zip`, `.rar`, `.7z`, `.iso`, and `.img` archives.
 - **Smart Executable Discovery**: Recursively scans extracted directories to surface primary binaries (`.exe`, `.bat`), sorting them logically by directory depth.
 - **One-Click Cleanup**: Interfaces with qBittorrent's Local Web API to seamlessly remove torrents and optionally purge downloaded source data once installation is complete.
 - **Explorer Integration**: Integrates directly into the Windows Shift+Right-Click context menu for on-demand execution on any local folder or archive.
 
-![PowerShell](https://img.shields.io/badge/PowerShell-5.1+-blue?logo=powershell)
-![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D6?logo=windows)
-![License](https://img.shields.io/badge/License-MIT-green)
 
 <p align="center">
   <img src="https://i.imgur.com/Y3974UK.png" alt="qBitLauncher GUI Screenshot" width="650">
@@ -43,12 +44,18 @@ qBitLauncher eliminates the need to manually navigate directories and extract ar
 
 ## Installation
 
-**Clone:**
+The easiest way to install qBitLauncher is to download the compiled executable.
+
+**Download Executable (Recommended):**
+1. Go to the [Releases page](https://github.com/DeonHolo/qBitLauncher/releases/latest).
+2. Download the latest `qBitLauncher.exe`.
+3. Place it in any folder you want to keep it in.
+
+**For Developers (Source Code):**
 ```bash
 git clone https://github.com/DeonHolo/qBitLauncher.git
 ```
-
-**Or download** `qBitLauncher.ps1` from the [repo](https://github.com/DeonHolo/qBitLauncher).
+*You can run `qBitLauncher.ps1` directly, or compile your own `.exe` using the included `Compile.ps1` script.*
 
 ### qBittorrent Integration
 
@@ -82,14 +89,7 @@ The easiest way to integrate with context menus is via the Dashboard:
 
 > **Note:** The menu item only appears with **Shift+Right-click** to keep your regular context menu clean.
 
-## Usage
-
-When a torrent completes:
-- **Archives**: Extract → show executables
-- **Executables**: Show selection GUI
-- **Media**: Open containing folder
-
-### GUI Actions
+## GUI Actions
 
 | Button | Action | Shortcut |
 |--------|--------|----------|
