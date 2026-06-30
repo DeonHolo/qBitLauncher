@@ -46,10 +46,10 @@ qBitLauncher eliminates the need to manually navigate directories and extract ar
 
 The easiest way to install qBitLauncher is to download the compiled executable.
 
-**Download Executable (Recommended):**
-1. Go to the [Releases page](https://github.com/DeonHolo/qBitLauncher/releases/latest).
-2. Download the latest `qBitLauncher.exe`.
-3. Place it in any folder you want to keep it in.
+1. **Download the latest `.exe`** from the [GitHub Releases](https://github.com/DeonHolo/qBitLauncher/releases/latest) page.
+2. **Run it** to launch the Setup window and install it to a permanent location.
+   > **Note:** Because this is an open-source tool without an expensive code-signing certificate, Windows SmartScreen may show an "unrecognized app" warning. Click **More Info** -> **Run anyway**.
+3. **Click "Install to qBittorrent"** from the Dashboard.
 
 **For Developers (Source Code):**
 ```bash

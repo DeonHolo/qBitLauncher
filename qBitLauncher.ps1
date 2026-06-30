@@ -3209,6 +3209,159 @@ function Remove-ContextMenu {
     }
 }
 
+function Show-InstallerGUI {
+    $colors = $Global:CurrentTheme
+    
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = "qBitLauncher Setup"
+    $form.Size = New-Object System.Drawing.Size(500, 360)
+    $form.StartPosition = 'CenterScreen'
+    $form.FormBorderStyle = 'FixedDialog'
+    $form.MaximizeBox = $false
+    $form.MinimizeBox = $true
+    $form.BackColor = $colors.FormBack
+    $form.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $form.Add_Shown({ Set-FormIcon -Form $this })
+
+    $titleLabel = New-Object System.Windows.Forms.Label
+    $titleLabel.Text = "Welcome to qBitLauncher"
+    $titleLabel.Font = New-Object System.Drawing.Font("Segoe UI", 16, [System.Drawing.FontStyle]::Bold)
+    $titleLabel.ForeColor = $colors.TextFore
+    $titleLabel.Location = New-Object System.Drawing.Point(20, 20)
+    $titleLabel.Size = New-Object System.Drawing.Size(400, 35)
+    $form.Controls.Add($titleLabel)
+
+    $descLabel = New-Object System.Windows.Forms.Label
+    $descLabel.Text = "Choose an installation folder. It is highly recommended to install qBitLauncher to a permanent location so integrations don't break if you clear your Downloads folder."
+    $descLabel.ForeColor = $colors.TextFore
+    $descLabel.Location = New-Object System.Drawing.Point(24, 60)
+    $descLabel.Size = New-Object System.Drawing.Size(440, 60)
+    $form.Controls.Add($descLabel)
+
+    $pathLabel = New-Object System.Windows.Forms.Label
+    $pathLabel.Text = "Destination Folder:"
+    $pathLabel.ForeColor = $colors.TextFore
+    $pathLabel.Location = New-Object System.Drawing.Point(24, 130)
+    $pathLabel.Size = New-Object System.Drawing.Size(440, 20)
+    $form.Controls.Add($pathLabel)
+
+    $pathBox = New-Object System.Windows.Forms.TextBox
+    $pathBox.Text = Join-Path $env:LOCALAPPDATA "qBitLauncher"
+    $pathBox.Location = New-Object System.Drawing.Point(24, 155)
+    $pathBox.Size = New-Object System.Drawing.Size(350, 25)
+    $pathBox.BackColor = $colors.ControlBack
+    $pathBox.ForeColor = $colors.TextFore
+    $pathBox.BorderStyle = 'FixedSingle'
+    $form.Controls.Add($pathBox)
+
+    $browseBtn = New-Object System.Windows.Forms.Button
+    $browseBtn.Text = "Browse..."
+    $browseBtn.Location = New-Object System.Drawing.Point(380, 154)
+    $browseBtn.Size = New-Object System.Drawing.Size(80, 27)
+    Set-ThemedButton -Button $browseBtn -Colors $colors
+    $browseBtn.Add_Click({
+        $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+        $dialog.Description = "Select Installation Folder"
+        $dialog.SelectedPath = $pathBox.Text
+        if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            $pathBox.Text = $dialog.SelectedPath
+        }
+    })
+    $form.Controls.Add($browseBtn)
+
+    $desktopShortcut = New-Object System.Windows.Forms.CheckBox
+    $desktopShortcut.Text = "Create Desktop Shortcut"
+    $desktopShortcut.Checked = $true
+    $desktopShortcut.ForeColor = $colors.TextFore
+    $desktopShortcut.Location = New-Object System.Drawing.Point(24, 195)
+    $desktopShortcut.Size = New-Object System.Drawing.Size(200, 25)
+    $form.Controls.Add($desktopShortcut)
+
+    $startShortcut = New-Object System.Windows.Forms.CheckBox
+    $startShortcut.Text = "Create Start Menu Shortcut"
+    $startShortcut.Checked = $true
+    $startShortcut.ForeColor = $colors.TextFore
+    $startShortcut.Location = New-Object System.Drawing.Point(230, 195)
+    $startShortcut.Size = New-Object System.Drawing.Size(220, 25)
+    $form.Controls.Add($startShortcut)
+
+    $installBtn = New-Object System.Windows.Forms.Button
+    $installBtn.Text = "Install"
+    $installBtn.Location = New-Object System.Drawing.Point(340, 260)
+    $installBtn.Size = New-Object System.Drawing.Size(120, 35)
+    $installBtn.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    Set-ThemedButton -Button $installBtn -Colors $colors
+    $installBtn.BackColor = $colors.Accent
+    $installBtn.ForeColor = $colors.FormBack
+    
+    $script:result = 'Cancel'
+    
+    $installBtn.Add_Click({
+        try {
+            $targetDir = $pathBox.Text
+            if (-not (Test-Path $targetDir)) {
+                New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+            }
+            
+            $isExe = $PSCommandPath.EndsWith(".exe", [System.StringComparison]::OrdinalIgnoreCase)
+            $scriptPath = if ($isExe) { $PSCommandPath } else { $MyInvocation.MyCommand.Path }
+            if (-not $scriptPath) { $scriptPath = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName }
+            
+            $fileName = Split-Path $scriptPath -Leaf
+            $targetFile = Join-Path $targetDir $fileName
+            
+            # Copy file
+            Copy-Item -Path $scriptPath -Destination $targetFile -Force
+            
+            # Create shortcuts
+            $wshShell = New-Object -ComObject WScript.Shell
+            if ($desktopShortcut.Checked) {
+                $desktopPath = [Environment]::GetFolderPath('Desktop')
+                $shortcut = $wshShell.CreateShortcut((Join-Path $desktopPath "qBitLauncher.lnk"))
+                $shortcut.TargetPath = $targetFile
+                $shortcut.WorkingDirectory = $targetDir
+                $shortcut.Save()
+            }
+            if ($startShortcut.Checked) {
+                $startPath = Join-Path ([Environment]::GetFolderPath('Programs')) "qBitLauncher"
+                if (-not (Test-Path $startPath)) { New-Item -ItemType Directory -Path $startPath -Force | Out-Null }
+                $shortcut = $wshShell.CreateShortcut((Join-Path $startPath "qBitLauncher.lnk"))
+                $shortcut.TargetPath = $targetFile
+                $shortcut.WorkingDirectory = $targetDir
+                $shortcut.Save()
+            }
+            
+            # Create an empty config in the target dir so it skips installer next time
+            Set-Content -Path (Join-Path $targetDir "config.json") -Value "{}" -Force
+            
+            # Launch new instance
+            Start-Process $targetFile
+            
+            $script:result = 'Installed'
+            $form.Close()
+        } catch {
+            Show-ThemedMessageBox -Message "Installation failed: $($_.Exception.Message)" -Title "Error" -Icon 'Error'
+        }
+    })
+    $form.Controls.Add($installBtn)
+
+    $portableBtn = New-Object System.Windows.Forms.Button
+    $portableBtn.Text = "Run Portably (Skip Install)"
+    $portableBtn.Location = New-Object System.Drawing.Point(24, 260)
+    $portableBtn.Size = New-Object System.Drawing.Size(200, 35)
+    Set-ThemedButton -Button $portableBtn -Colors $colors
+    $portableBtn.Add_Click({
+        $script:result = 'Portable'
+        $form.Close()
+    })
+    $form.Controls.Add($portableBtn)
+
+    $form.ShowDialog() | Out-Null
+    $form.Dispose()
+    
+    return $result
+}
+
 function Show-SetupMenu {
     $colors = $Global:CurrentTheme
     
@@ -3328,6 +3481,22 @@ if ($startupNewVersion) {
 # Setup Mode: If no path provided (e.g., double-clicking EXE), show Setup Menu
 if ([string]::IsNullOrWhiteSpace($filePathFromQB)) {
     Write-LogMessage "No path provided - entering setup mode"
+    
+    if (-not (Test-Path $Global:ConfigFile)) {
+        $installChoice = Show-InstallerGUI
+        if ($installChoice -eq 'Installed') {
+            Write-LogMessage "User installed to a new location. Exiting current process."
+            exit 0
+        }
+        elseif ($installChoice -eq 'Portable') {
+            Write-LogMessage "User chose portable mode. Saving default config."
+            Save-UserSettings
+        }
+        else {
+            Write-LogMessage "User cancelled installer. Exiting."
+            exit 0
+        }
+    }
     
     do {
         $runManual = Show-SetupMenu
