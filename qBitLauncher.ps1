@@ -43,7 +43,7 @@ public const int ICON_BIG = 1;
 # Configuration
 # -------------------------
 # Version and update settings
-$Global:ScriptVersion = "3.0.0"
+$Global:ScriptVersion = "3.1.0"
 $Global:MainForm = $null
 $Global:GitHubRawUrl = "https://raw.githubusercontent.com/DeonHolo/qBitLauncher/main/qBitLauncher.ps1"
 $Global:GitHubCommitsUrl = "https://github.com/DeonHolo/qBitLauncher/commits/main"
