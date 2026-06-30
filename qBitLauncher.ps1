@@ -1,5 +1,4 @@
 # qBitLauncher.ps1
-# Trigger version bump
 
 param(
     [string]$filePathFromQB,

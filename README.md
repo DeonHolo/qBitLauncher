@@ -10,6 +10,10 @@ A PowerShell post-download handler for qBittorrent with a themed GUI for extract
 ![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D6?logo=windows)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
+<p align="center">
+  <img src="https://i.imgur.com/Y3974UK.png" alt="qBitLauncher GUI Screenshot" width="650">
+</p>
+
 ## Features
 
 - 🗜️ **External extraction** - Extracts ZIP, RAR, 7z, ISO, and IMG archives through the installed 7-Zip or WinRAR GUI
