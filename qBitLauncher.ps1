@@ -260,7 +260,7 @@ del "%~f0"
                 Write-LogMessage "Starting updater batch script and exiting."
                 $wsh = New-Object -ComObject WScript.Shell
                 $wsh.Run("cmd.exe /c `"$batPath`"", 0, $false) | Out-Null
-                exit
+                [Environment]::Exit(0)
                 
             } catch {
                 Write-LogMessage "Executable auto-update failed: $($_.Exception.Message)"
@@ -292,7 +292,7 @@ del "%~f0"
         if ($Restart) {
             # Restart the script
             Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File `"$scriptPath`"" -WindowStyle Hidden
-            exit
+            [Environment]::Exit(0)
         }
         return $true
     }
