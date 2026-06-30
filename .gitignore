@@ -38,7 +38,6 @@ Desktop.ini
 Docs/
 
 # Compiled executable (PS2EXE output)
-*.exe
 
 # Icon file
 # *.ico
@@ -48,3 +47,5 @@ Docs/
 
 # User config (generated at runtime)
 config.json
+
+*.exe

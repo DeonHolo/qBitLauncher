@@ -9,16 +9,23 @@ param(
 # -------------------------
 # GLOBAL INITIALIZATION
 # -------------------------
+# Determine true execution context (Fix for PS2EXE $PSCommandPath unreliability on new PCs)
+$processPath = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+$Global:IsCompiledExe = ($processPath -notmatch 'powershell(\_ise)?\.exe$' -and $processPath -notmatch 'pwsh\.exe$')
+
+# Determine script directory (handle PS2EXE compiled EXE where $PSScriptRoot is empty)
+$Global:ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } 
+elseif ($MyInvocation.MyCommand.Path) { Split-Path $MyInvocation.MyCommand.Path -Parent }
+elseif ([System.AppDomain]::CurrentDomain.BaseDirectory) { [System.AppDomain]::CurrentDomain.BaseDirectory.TrimEnd('\') }
+else { [Environment]::CurrentDirectory }
+
+$Global:ExecutablePath = if ($Global:IsCompiledExe) { $processPath } else { (Join-Path $Global:ScriptDir "qBitLauncher.ps1") }
+
 # Load .NET assemblies at the start to make their types available globally.
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
-# $isExe = $false
-if ($PSCommandPath) {
-    $isExe = $PSCommandPath.EndsWith(".exe", [System.StringComparison]::OrdinalIgnoreCase)
-}
-
-if (-not $isExe) {
+if (-not $Global:IsCompiledExe) {
     # Hide the PowerShell console window (show only GUI)
     Add-Type -Name Window -Namespace Console -MemberDefinition '
     [DllImport("Kernel32.dll")]
@@ -57,12 +64,6 @@ $Global:MainForm = $null
 $Global:GitHubRawUrl = "https://raw.githubusercontent.com/DeonHolo/qBitLauncher/main/qBitLauncher.ps1"
 $Global:GitHubCommitsUrl = "https://github.com/DeonHolo/qBitLauncher/commits/main"
 
-# Determine script directory (handle PS2EXE compiled EXE where $PSScriptRoot is empty)
-$Global:ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } 
-elseif ($MyInvocation.MyCommand.Path) { Split-Path $MyInvocation.MyCommand.Path -Parent }
-elseif ([System.AppDomain]::CurrentDomain.BaseDirectory) { [System.AppDomain]::CurrentDomain.BaseDirectory.TrimEnd('\') }
-else { [Environment]::CurrentDirectory }
-
 # Log file in script folder for easy access
 $LogFile = Join-Path $Global:ScriptDir "qBitLauncher_log.txt"
 $ArchiveExtensions = @('iso', 'zip', 'rar', '7z', 'img')
@@ -78,7 +79,7 @@ try {
     # Icon loaded successfully (silent - no output in compiled EXE)
 }
 catch {
-    Write-Warning "Could not load embedded app icon: $($_.Exception.Message)"
+    Write-LogMessage "Could not load embedded app icon: $($_.Exception.Message)"
 }
 
 # Helper function to set form icon properly (including taskbar)
@@ -1698,7 +1699,7 @@ function Expand-ArchiveFile {
         try {
             $arguments = Get-ArchiveExtractorArguments -Extractor $extractor -ArchivePath $ArchivePath -DestinationPath $DestinationPath
             Write-LogMessage "Launching $($extractor.Name) GUI extractor: $($extractor.Path)"
-            Write-Host "Launching $($extractor.Name) to extract '${ArchivePath}'..."
+            Write-LogMessage "Launching $($extractor.Name) to extract '${ArchivePath}'..."
 
             $process = Start-Process -FilePath $extractor.Path -ArgumentList $arguments -PassThru -Wait -ErrorAction Stop
             $exitCode = $process.ExitCode
@@ -1737,7 +1738,7 @@ function Expand-ArchiveFile {
 function Get-AllRunnables {
     param([string]$RootFolderPath)
     Write-LogMessage "Searching for runnables (.exe, .bat, .cmd) in '$RootFolderPath' (depth-first sort)."
-    Write-Host "Searching for .exe, .bat, .cmd files in '$RootFolderPath' and its subfolders..."
+    Write-LogMessage "Searching for .exe, .bat, .cmd files in '$RootFolderPath' and its subfolders..."
     
     # Get all runnable file types (use Where-Object for reliable filtering)
     $runnableExtensions = @('.exe', '.bat', '.cmd')
@@ -1751,7 +1752,7 @@ function Get-AllRunnables {
         return $sortedRunnables
     }
     Write-LogMessage "No runnable files found in '$RootFolderPath'."
-    Write-Warning "No .exe, .bat, or .cmd files found in '$RootFolderPath' or its subdirectories."
+    Write-LogMessage "No .exe, .bat, or .cmd files found in '$RootFolderPath' or its subdirectories."
     return $null
 }
 
@@ -2271,7 +2272,7 @@ function Show-ExecutableSelectionForm {
 
     # === Custom Column Resizing with Visible Divider ===
     # Permanently disable horizontal scrollbar using ListView style (only if not exe to avoid csc.exe flash)
-    if (-not $isExe) {
+    if (-not $Global:IsCompiledExe) {
         Add-Type -Name ListViewStyleHelper -Namespace Win32 -MemberDefinition '
             [DllImport("user32.dll", SetLastError = true)]
             public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
@@ -3007,14 +3008,10 @@ function Install-QBittorrentIntegration {
     }
 
     try {
-        # Determine current executable or script path
-        $isExe = $PSCommandPath.EndsWith(".exe", [System.StringComparison]::OrdinalIgnoreCase)
-        $scriptPath = if ($isExe) { $PSCommandPath } else { (Join-Path $Global:ScriptDir "qBitLauncher.ps1") }
-        
-        $command = if ($isExe) {
-            "`"$scriptPath`" `"%F`" `"%I`" `"%N`""
+        $command = if ($Global:IsCompiledExe) {
+            "`"$Global:ExecutablePath`" `"%F`" `"%I`" `"%N`""
         } else {
-            "powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`" `"%F`" `"%I`" `"%N`""
+            "powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$Global:ExecutablePath`" `"%F`" `"%I`" `"%N`""
         }
         
         # Qt's QSettings INI parser treats backslashes and quotes as escape characters.
@@ -3108,13 +3105,10 @@ function Install-QBittorrentIntegration {
 }
 
 function Install-ContextMenu {
-    $isExe = $PSCommandPath.EndsWith(".exe", [System.StringComparison]::OrdinalIgnoreCase)
-    $scriptPath = if ($isExe) { $PSCommandPath } else { (Join-Path $Global:ScriptDir "qBitLauncher.ps1") }
-    
-    $commandStr = if ($isExe) {
-        "`"$scriptPath`" `"%V`""
+    $commandStr = if ($Global:IsCompiledExe) {
+        "`"$Global:ExecutablePath`" `"%V`""
     } else {
-        "powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`" `"%V`""
+        "powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$Global:ExecutablePath`" `"%V`""
     }
     
     $fileCommandStr = $commandStr.Replace("%V", "%1")
@@ -3135,7 +3129,7 @@ function Install-ContextMenu {
             if (-not (Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
             New-ItemProperty -Path $path -Name "(default)" -Value "Open with qBitLauncher" -Force | Out-Null
             
-            $icon = if ($isExe) { "$scriptPath,0" } else { "powershell.exe,0" }
+            $icon = if ($Global:IsCompiledExe) { "$Global:ExecutablePath,0" } else { "powershell.exe,0" }
             New-ItemProperty -Path $path -Name "Icon" -Value $icon -Force | Out-Null
             New-ItemProperty -Path $path -Name "Extended" -Value "" -Force | Out-Null
             
@@ -3594,7 +3588,7 @@ $mainFileToProcess = $null
 
 if (Test-Path -LiteralPath $filePathFromQB -PathType Container) {
     $downloadFolder = $filePathFromQB
-    Write-Host "Input path is a folder: '$downloadFolder'. Searching for primary file..."
+    Write-LogMessage "Input path is a folder: '$downloadFolder'. Searching for primary file..."
     $mainFileToProcess = Get-ChildItem -LiteralPath $downloadFolder -File -Recurse | Where-Object { $ArchiveExtensions -contains $_.Extension.TrimStart('.').ToLowerInvariant() } | Sort-Object Length -Descending | Select-Object -First 1
     
     if ($mainFileToProcess) {
@@ -3610,11 +3604,11 @@ if (Test-Path -LiteralPath $filePathFromQB -PathType Container) {
             Write-LogMessage "No executables found. Checking for media files..."
             $foundMediaFile = Get-ChildItem -LiteralPath $downloadFolder -File -Recurse | Where-Object { $MediaExtensions -contains $_.Extension.TrimStart('.').ToLowerInvariant() } | Select-Object -First 1
             if ($foundMediaFile) {
-                Write-Host "Found a media file: $($foundMediaFile.Name). Opening folder."
+                Write-LogMessage "Found a media file: $($foundMediaFile.Name). Opening folder."
                 Start-Process explorer -ArgumentList "`"$(Split-Path $foundMediaFile.FullName -Parent)`""
             }
             else {
-                Write-Warning "No processable files found in '$downloadFolder'."
+                Write-LogMessage "No processable files found in '$downloadFolder'."
                 Start-Process explorer -ArgumentList "`"$downloadFolder`""
             }
         }
@@ -3634,7 +3628,7 @@ if ($mainFileToProcess) {
 
     if ($ArchiveExtensions -contains $ext) {
         Write-LogMessage "Processing archive: '$filePath'"
-        Write-Host "`nFound an archive file: $filePath"
+        Write-LogMessage "Found an archive file: $filePath"
         
         # Default extraction path (beside the archive, in a subfolder named after archive)
         $defaultExtractPath = Join-Path $parentDir $baseName
@@ -3646,13 +3640,13 @@ if ($mainFileToProcess) {
             Write-LogMessage "User confirmed extraction to: $($extractionResult.DestinationPath)"
             $extractedDir = Expand-ArchiveFile -ArchivePath $filePath -DestinationPath $extractionResult.DestinationPath
             if ($extractedDir) {
-                Write-Host "`nExtraction complete. Searching for runnables..."
+                Write-LogMessage "Extraction complete. Searching for runnables..."
                 $runnablesInArchive = Get-AllRunnables -RootFolderPath $extractedDir
                 if ($runnablesInArchive) {
                     Show-ExecutableSelectionForm -FoundExecutables $runnablesInArchive -WindowTitle "qBitLauncher" -RootFolder $extractedDir -TorrentHash $torrentHashFromQB -TorrentName $torrentNameFromQB
                 }
                 else {
-                    Write-Warning "No executables found in the extracted folder: $extractedDir"
+                    Write-LogMessage "No executables found in the extracted folder: $extractedDir"
                     Start-Process explorer -ArgumentList "`"$extractedDir`""
                 }
             }
@@ -3661,13 +3655,13 @@ if ($mainFileToProcess) {
             # User chose to use existing extracted files instead of re-extracting
             $existingDir = $extractionResult.DestinationPath
             Write-LogMessage "User chose to use existing files in: '$existingDir'"
-            Write-Host "`nUsing existing extracted files. Searching for runnables..."
+            Write-LogMessage "Using existing extracted files. Searching for runnables..."
             $runnablesInExisting = Get-AllRunnables -RootFolderPath $existingDir
             if ($runnablesInExisting) {
                 Show-ExecutableSelectionForm -FoundExecutables $runnablesInExisting -WindowTitle "qBitLauncher" -RootFolder $existingDir -TorrentHash $torrentHashFromQB -TorrentName $torrentNameFromQB
             }
             else {
-                Write-Warning "No executables found in existing folder: $existingDir"
+                Write-LogMessage "No executables found in existing folder: $existingDir"
                 Start-Process explorer -ArgumentList "`"$existingDir`""
             }
         }
@@ -3681,7 +3675,7 @@ if ($mainFileToProcess) {
                 Show-ExecutableSelectionForm -FoundExecutables $runnablesInFolder -WindowTitle "qBitLauncher" -RootFolder $searchFolder -TorrentHash $torrentHashFromQB -TorrentName $torrentNameFromQB
             }
             else {
-                Write-Warning "No executables found in folder: $searchFolder"
+                Write-LogMessage "No executables found in folder: $searchFolder"
                 Start-Process explorer -ArgumentList "`"$searchFolder`""
             }
         }
@@ -3698,19 +3692,19 @@ if ($mainFileToProcess) {
     } 
     elseif ($MediaExtensions -contains $ext) {
         Write-LogMessage "File is a media file."
-        Write-Host "Media file '${filePath}' is ready."
+        Write-LogMessage "Media file '${filePath}' is ready."
         Start-Process explorer -ArgumentList "`"$parentDir`""
-        Write-Host "Opening containing folder: $parentDir"
+        Write-LogMessage "Opening containing folder: $parentDir"
     }
     else {
         Write-LogMessage "File is an unhandled type (.$ext)."
-        Write-Warning "File type .${ext} is not handled explicitly."
+        Write-LogMessage "File type .${ext} is not handled explicitly."
         Start-Process explorer -ArgumentList "`"$parentDir`""
-        Write-Host "Opening containing folder: $parentDir"
+        Write-LogMessage "Opening containing folder: $parentDir"
     }
 }
 
-Write-Host "`nScript actions complete."
+Write-LogMessage "Script actions complete."
 Write-LogMessage "Script finished."
 
 Write-LogMessage "--------------------------------------------------------`n"
