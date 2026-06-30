@@ -59,7 +59,7 @@ if (-not $Global:IsCompiledExe) {
 # Configuration
 # -------------------------
 # Version and update settings
-$Global:ScriptVersion = "3.2.0"
+$Global:ScriptVersion = "3.3.0"
 $Global:MainForm = $null
 $Global:GitHubRawUrl = "https://raw.githubusercontent.com/DeonHolo/qBitLauncher/main/qBitLauncher.ps1"
 $Global:GitHubCommitsUrl = "https://github.com/DeonHolo/qBitLauncher/commits/main"
