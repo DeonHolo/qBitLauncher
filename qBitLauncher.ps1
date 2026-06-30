@@ -186,7 +186,64 @@ function Update-Script {
         # Get current script path
         $scriptPath = $PSCommandPath
         if (-not $scriptPath) { $scriptPath = $MyInvocation.PSCommandPath }
-        if (-not $scriptPath) { $scriptPath = Join-Path $PSScriptRoot "qBitLauncher.ps1" }
+        
+        $isExe = $false
+        if (-not $scriptPath) {
+            try { 
+                $processModule = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName 
+                if ($processModule -match '\.exe$') {
+                    $isExe = $true
+                    $scriptPath = $processModule
+                }
+            } catch {}
+        } elseif ($scriptPath -match '\.exe$') {
+            $isExe = $true
+        }
+        
+        if ($isExe) {
+            Write-LogMessage "Auto-updating compiled executable ($scriptPath)..."
+            
+            try {
+                $releaseUrl = "https://api.github.com/repos/DeonHolo/qBitLauncher/releases/latest"
+                $releaseInfo = Invoke-RestMethod -Uri $releaseUrl -UseBasicParsing -TimeoutSec 15
+                $exeAsset = $releaseInfo.assets | Where-Object { $_.name -eq "qBitLauncher.exe" }
+                
+                if (-not $exeAsset) {
+                    throw "Could not find qBitLauncher.exe in the latest GitHub release."
+                }
+                
+                $downloadUrl = $exeAsset.browser_download_url
+                $updateExePath = $scriptPath -replace '\.exe$', '_update.exe'
+                
+                Write-LogMessage "Downloading $downloadUrl to $updateExePath"
+                Invoke-WebRequest -Uri $downloadUrl -OutFile $updateExePath -UseBasicParsing -TimeoutSec 60
+                
+                # Create a batch script to swap the files
+                $batPath = Join-Path $env:TEMP "qBitLauncher_updater.bat"
+                $batContent = @"
+@echo off
+echo Waiting for qBitLauncher to close...
+ping 127.0.0.1 -n 4 > nul
+move /y "$updateExePath" "$scriptPath"
+start "" "$scriptPath"
+del "%~f0"
+"@
+                [IO.File]::WriteAllText($batPath, $batContent, [System.Text.Encoding]::ASCII)
+                
+                Write-LogMessage "Starting updater batch script and exiting."
+                Start-Process -FilePath "cmd.exe" -ArgumentList "/c `"$batPath`"" -WindowStyle Hidden
+                exit
+                
+            } catch {
+                Write-LogMessage "Executable auto-update failed: $($_.Exception.Message)"
+                Show-ThemedMessageBox -Message "Failed to auto-update the executable:`n$($_.Exception.Message)`n`nPlease download the latest release manually." -Title "Update Failed" -Icon 'Warning'
+                return $false
+            }
+        }
+        
+        if (-not $scriptPath -or -not (Test-Path $scriptPath)) { 
+            $scriptPath = Join-Path $PSScriptRoot "qBitLauncher.ps1" 
+        }
         
         # Backup current script
         $backupPath = "$scriptPath.bak"
@@ -2017,6 +2074,7 @@ function Show-SettingsForm {
                 Invoke-ActionSound -Type Success
                 Show-ThemedMessageBox -Message "Settings saved!" -Title "Settings" -Icon 'Information'
             }
+            $form.DialogResult = [System.Windows.Forms.DialogResult]::OK
             $form.Close()
         })
 
@@ -2037,8 +2095,9 @@ function Show-SettingsForm {
     $form.CancelButton = $cancelButton
 
     $owner = $Global:MainForm
-    if ($owner) { $form.ShowDialog($owner) | Out-Null } else { $form.ShowDialog() | Out-Null }
+    if ($owner) { $result = $form.ShowDialog($owner) } else { $result = $form.ShowDialog() }
     $form.Dispose()
+    return ($result -eq [System.Windows.Forms.DialogResult]::OK)
 }
 
 
@@ -2915,6 +2974,345 @@ function Show-ExecutableSelectionForm {
     $form.Dispose()
 }
 
+# -------------------------
+# First-Time Setup GUI and Integration
+# -------------------------
+
+function Install-QBittorrentIntegration {
+    # Check if qbittorrent is running
+    $qbProcess = Get-Process -Name "qbittorrent" -ErrorAction SilentlyContinue
+    if ($qbProcess) {
+        $msg = "qBittorrent is currently running.`n`nPlease close qBittorrent completely (File -> Exit) before installing the integration, otherwise it may overwrite the changes when it closes."
+        Show-ThemedMessageBox -Message $msg -Title "Close qBittorrent" -Icon 'Warning'
+        return $false
+    }
+
+    $iniPath = Join-Path $env:APPDATA "qBittorrent\qBittorrent.ini"
+    if (-not (Test-Path $iniPath)) {
+        Show-ThemedMessageBox -Message "Could not find qBittorrent.ini at:`n$iniPath`n`nPlease ensure qBittorrent is installed and has been run at least once." -Title "Error" -Icon 'Error'
+        return $false
+    }
+
+    try {
+        # Determine current executable or script path
+        $isExe = $PSCommandPath.EndsWith(".exe", [System.StringComparison]::OrdinalIgnoreCase)
+        $scriptPath = if ($isExe) { $PSCommandPath } else { (Join-Path $Global:ScriptDir "qBitLauncher.ps1") }
+        
+        $command = if ($isExe) {
+            "`"$scriptPath`" `"%F`" `"%I`" `"%N`""
+        } else {
+            "powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`" `"%F`" `"%I`" `"%N`""
+        }
+        
+        # Qt's QSettings INI parser treats backslashes and quotes as escape characters.
+        # We must escape them so the literal path is preserved in qBittorrent.
+        $command = $command.Replace('\', '\\').Replace('"', '\"')
+        
+        # Parse and update the ini file
+        $iniLines = [System.IO.File]::ReadAllLines($iniPath)
+        $newLines = @()
+        $inAutoRun = $false
+        $foundAutoRun = $false
+        $updatedEnabled = $false
+        $updatedProgram = $false
+        
+        foreach ($line in $iniLines) {
+            if ($line -match '^\[(.*)\]$') {
+                if ($inAutoRun) {
+                    if (-not $updatedEnabled) { $newLines += "enabled=true" }
+                    if (-not $updatedProgram) { $newLines += "program=$command" }
+                    $inAutoRun = $false
+                }
+                
+                if ($line -eq '[AutoRun]') {
+                    $inAutoRun = $true
+                    $foundAutoRun = $true
+                }
+                $newLines += $line
+            }
+            elseif ($inAutoRun) {
+                if ($line -match '^enabled\s*=') {
+                    $newLines += "enabled=true"
+                    $updatedEnabled = $true
+                }
+                elseif ($line -match '^program\s*=') {
+                    $newLines += "program=$command"
+                    $updatedProgram = $true
+                }
+                else {
+                    $newLines += $line
+                }
+            }
+            else {
+                $newLines += $line
+            }
+        }
+        
+        if ($inAutoRun) {
+            if (-not $updatedEnabled) { $newLines += "enabled=true" }
+            if (-not $updatedProgram) { $newLines += "program=$command" }
+        }
+        elseif (-not $foundAutoRun) {
+            $newLines += ""
+            $newLines += "[AutoRun]"
+            $newLines += "enabled=true"
+            $newLines += "program=$command"
+        }
+        
+        [System.IO.File]::WriteAllLines($iniPath, $newLines)
+        
+        Show-ThemedMessageBox -Message "Successfully integrated qBitLauncher into qBittorrent!`n`nqBittorrent will now automatically launch this tool when a download completes." -Title "Success" -Icon 'Information'
+        return $true
+    }
+    catch {
+        Show-ThemedMessageBox -Message "Failed to update qBittorrent configuration:`n$($_.Exception.Message)" -Title "Error" -Icon 'Error'
+        return $false
+    }
+}
+
+function Install-ContextMenu {
+    $isExe = $PSCommandPath.EndsWith(".exe", [System.StringComparison]::OrdinalIgnoreCase)
+    $scriptPath = if ($isExe) { $PSCommandPath } else { (Join-Path $Global:ScriptDir "qBitLauncher.ps1") }
+    
+    $commandStr = if ($isExe) {
+        "`"$scriptPath`" `"%V`""
+    } else {
+        "powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`" `"%V`""
+    }
+    
+    $fileCommandStr = $commandStr.Replace("%V", "%1")
+    
+    try {
+        # Using HKCU:\Software\Classes instead of HKCR avoids the need for Administrator privileges
+        $basePaths = @(
+            "HKCU:\Software\Classes\Directory\shell\qBitLauncher",
+            "HKCU:\Software\Classes\Directory\Background\shell\qBitLauncher",
+            "HKCU:\Software\Classes\SystemFileAssociations\.zip\shell\qBitLauncher",
+            "HKCU:\Software\Classes\SystemFileAssociations\.rar\shell\qBitLauncher",
+            "HKCU:\Software\Classes\SystemFileAssociations\.7z\shell\qBitLauncher",
+            "HKCU:\Software\Classes\SystemFileAssociations\.iso\shell\qBitLauncher",
+            "HKCU:\Software\Classes\SystemFileAssociations\.img\shell\qBitLauncher"
+        )
+        
+        foreach ($path in $basePaths) {
+            if (-not (Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
+            New-ItemProperty -Path $path -Name "(default)" -Value "Open with qBitLauncher" -Force | Out-Null
+            
+            $icon = if ($isExe) { "$scriptPath,0" } else { "powershell.exe,0" }
+            New-ItemProperty -Path $path -Name "Icon" -Value $icon -Force | Out-Null
+            New-ItemProperty -Path $path -Name "Extended" -Value "" -Force | Out-Null
+            
+            $cmdPath = "$path\command"
+            if (-not (Test-Path $cmdPath)) { New-Item -Path $cmdPath -Force | Out-Null }
+            
+            $finalCmd = if ($path -match "Directory") { $commandStr } else { $fileCommandStr }
+            New-ItemProperty -Path $cmdPath -Name "(default)" -Value $finalCmd -Force | Out-Null
+        }
+        
+        Show-ThemedMessageBox -Message "Successfully added 'Open with qBitLauncher' to Shift+Right-click menus!" -Title "Success" -Icon 'Information'
+        return $true
+    }
+    catch {
+        Show-ThemedMessageBox -Message "Failed to install context menus:`n$($_.Exception.Message)" -Title "Error" -Icon 'Error'
+        return $false
+    }
+}
+
+function Remove-QBittorrentIntegration {
+    # Check if qbittorrent is running
+    $qbProcess = Get-Process -Name "qbittorrent" -ErrorAction SilentlyContinue
+    if ($qbProcess) {
+        $msg = "qBittorrent is currently running.`n`nPlease close qBittorrent completely (File -> Exit) before uninstalling the integration, otherwise it may overwrite the changes when it closes."
+        Show-ThemedMessageBox -Message $msg -Title "Close qBittorrent" -Icon 'Warning'
+        return $false
+    }
+
+    $iniPath = Join-Path $env:APPDATA "qBittorrent\qBittorrent.ini"
+    if (-not (Test-Path $iniPath)) {
+        Show-ThemedMessageBox -Message "Could not find qBittorrent.ini at:`n$iniPath" -Title "Error" -Icon 'Error'
+        return $false
+    }
+
+    try {
+        $iniLines = [System.IO.File]::ReadAllLines($iniPath)
+        $newLines = @()
+        $inAutoRun = $false
+        $updated = $false
+        
+        foreach ($line in $iniLines) {
+            if ($line -match '^\[(.*)\]$') {
+                $inAutoRun = ($line -eq '[AutoRun]')
+                $newLines += $line
+            }
+            elseif ($inAutoRun) {
+                if ($line -match '^enabled\s*=') {
+                    $newLines += "enabled=false"
+                    $updated = $true
+                }
+                elseif ($line -match '^program\s*=') {
+                    $newLines += "program="
+                    $updated = $true
+                }
+                else {
+                    $newLines += $line
+                }
+            }
+            else {
+                $newLines += $line
+            }
+        }
+        
+        if ($updated) {
+            [System.IO.File]::WriteAllLines($iniPath, $newLines)
+            Show-ThemedMessageBox -Message "Successfully removed integration from qBittorrent!" -Title "Success" -Icon 'Information'
+        } else {
+            Show-ThemedMessageBox -Message "No integration found in qBittorrent settings." -Title "Info" -Icon 'Information'
+        }
+        return $true
+    }
+    catch {
+        Show-ThemedMessageBox -Message "Failed to update qBittorrent configuration:`n$($_.Exception.Message)" -Title "Error" -Icon 'Error'
+        return $false
+    }
+}
+
+function Remove-ContextMenu {
+    try {
+        $basePaths = @(
+            "HKCU:\Software\Classes\Directory\shell\qBitLauncher",
+            "HKCU:\Software\Classes\Directory\Background\shell\qBitLauncher",
+            "HKCU:\Software\Classes\SystemFileAssociations\.zip\shell\qBitLauncher",
+            "HKCU:\Software\Classes\SystemFileAssociations\.rar\shell\qBitLauncher",
+            "HKCU:\Software\Classes\SystemFileAssociations\.7z\shell\qBitLauncher",
+            "HKCU:\Software\Classes\SystemFileAssociations\.iso\shell\qBitLauncher",
+            "HKCU:\Software\Classes\SystemFileAssociations\.img\shell\qBitLauncher"
+        )
+        
+        $removed = $false
+        foreach ($path in $basePaths) {
+            if (Test-Path $path) {
+                Remove-Item -Path $path -Recurse -Force | Out-Null
+                $removed = $true
+            }
+        }
+        
+        if ($removed) {
+            Show-ThemedMessageBox -Message "Successfully removed 'Open with qBitLauncher' from Context Menus!" -Title "Success" -Icon 'Information'
+        } else {
+            Show-ThemedMessageBox -Message "Context menus were not currently installed." -Title "Info" -Icon 'Information'
+        }
+        return $true
+    }
+    catch {
+        Show-ThemedMessageBox -Message "Failed to remove context menus:`n$($_.Exception.Message)" -Title "Error" -Icon 'Error'
+        return $false
+    }
+}
+
+function Show-SetupMenu {
+    $colors = $Global:CurrentTheme
+    
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = "qBitLauncher Dashboard"
+    $form.Size = New-Object System.Drawing.Size(460, 520)
+    $form.StartPosition = 'CenterScreen'
+    $form.FormBorderStyle = 'FixedDialog'
+    $form.MaximizeBox = $false
+    $form.MinimizeBox = $true
+    $form.BackColor = $colors.FormBack
+    $form.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $form.Add_Shown({ Set-FormIcon -Form $this })
+    
+    $titleLabel = New-Object System.Windows.Forms.Label
+    $titleLabel.Location = New-Object System.Drawing.Point(30, 25)
+    $titleLabel.Size = New-Object System.Drawing.Size(400, 30)
+    $titleLabel.Text = "qBitLauncher Dashboard"
+    $titleLabel.ForeColor = $colors.TextFore
+    $titleLabel.Font = New-Object System.Drawing.Font("Segoe UI", 16, [System.Drawing.FontStyle]::Bold)
+    $form.Controls.Add($titleLabel)
+    
+    $descLabel = New-Object System.Windows.Forms.Label
+    $descLabel.Location = New-Object System.Drawing.Point(32, 65)
+    $descLabel.Size = New-Object System.Drawing.Size(390, 45)
+    $descLabel.Text = "Manage your qBitLauncher installation and integration settings using the options below."
+    $descLabel.ForeColor = $colors.SecondaryText
+    $form.Controls.Add($descLabel)
+    
+    $btnWidth = 370
+    $btnHeight = 45
+    $startX = 32
+    $startY = 125
+    $spacing = 15
+    
+    $installQbBtn = New-Object System.Windows.Forms.Button
+    $installQbBtn.Location = New-Object System.Drawing.Point($startX, $startY)
+    $installQbBtn.Size = New-Object System.Drawing.Size($btnWidth, $btnHeight)
+    $installQbBtn.Text = "Install to qBittorrent"
+    $installQbBtn.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    Set-ThemedButton -Button $installQbBtn -Colors $colors
+    $installQbBtn.BackColor = $colors.Accent
+    $installQbBtn.ForeColor = $colors.FormBack
+    $installQbBtn.Add_Click({ Invoke-ActionSound -Type Notify; Install-QBittorrentIntegration })
+    $form.Controls.Add($installQbBtn)
+    
+    $removeQbBtn = New-Object System.Windows.Forms.Button
+    $removeQbBtn.Location = New-Object System.Drawing.Point($startX, ($startY + $btnHeight + $spacing))
+    $removeQbBtn.Size = New-Object System.Drawing.Size($btnWidth, $btnHeight)
+    $removeQbBtn.Text = "Remove from qBittorrent"
+    Set-ThemedButton -Button $removeQbBtn -Colors $colors
+    $removeQbBtn.Add_Click({ Invoke-ActionSound -Type Notify; Remove-QBittorrentIntegration })
+    $form.Controls.Add($removeQbBtn)
+
+    $installCtxBtn = New-Object System.Windows.Forms.Button
+    $installCtxBtn.Location = New-Object System.Drawing.Point($startX, ($startY + ($btnHeight + $spacing) * 2))
+    $installCtxBtn.Size = New-Object System.Drawing.Size($btnWidth, $btnHeight)
+    $installCtxBtn.Text = "Add Shift+Right-Click Context Menus"
+    Set-ThemedButton -Button $installCtxBtn -Colors $colors
+    $installCtxBtn.Add_Click({ Invoke-ActionSound -Type Notify; Install-ContextMenu })
+    $form.Controls.Add($installCtxBtn)
+    
+    $removeCtxBtn = New-Object System.Windows.Forms.Button
+    $removeCtxBtn.Location = New-Object System.Drawing.Point($startX, ($startY + ($btnHeight + $spacing) * 3))
+    $removeCtxBtn.Size = New-Object System.Drawing.Size($btnWidth, $btnHeight)
+    $removeCtxBtn.Text = "Remove Context Menus"
+    Set-ThemedButton -Button $removeCtxBtn -Colors $colors
+    $removeCtxBtn.Add_Click({ Invoke-ActionSound -Type Notify; Remove-ContextMenu })
+    $form.Controls.Add($removeCtxBtn)
+
+    $manualRunBtn = New-Object System.Windows.Forms.Button
+    $manualRunBtn.Location = New-Object System.Drawing.Point($startX, ($startY + ($btnHeight + $spacing) * 4))
+    $manualRunBtn.Size = New-Object System.Drawing.Size($btnWidth, $btnHeight)
+    $manualRunBtn.Text = "Run Extraction Manually..."
+    Set-ThemedButton -Button $manualRunBtn -Colors $colors
+    $manualRunBtn.Add_Click({
+        Invoke-ActionSound -Type Notify
+        $form.DialogResult = [System.Windows.Forms.DialogResult]::OK
+        $form.Close()
+    })
+    $form.Controls.Add($manualRunBtn)
+    
+    $settingsBtn = New-Object System.Windows.Forms.Button
+    $settingsBtn.Location = New-Object System.Drawing.Point($startX, ($startY + ($btnHeight + $spacing) * 5))
+    $settingsBtn.Size = New-Object System.Drawing.Size($btnWidth, $btnHeight)
+    $settingsBtn.Text = "Open Settings"
+    Set-ThemedButton -Button $settingsBtn -Colors $colors
+    $settingsBtn.Add_Click({ 
+        Invoke-ActionSound -Type Notify
+        if (Show-SettingsForm) {
+            $form.DialogResult = [System.Windows.Forms.DialogResult]::Retry
+            $form.Close()
+        }
+    })
+    $form.Controls.Add($settingsBtn)
+    
+    $Global:MainForm = $form
+    $result = $form.ShowDialog()
+    $form.Dispose()
+    $Global:MainForm = $null
+    
+    return $result
+}
+
 # ===================================================================
 # MAIN SCRIPT LOGIC STARTS HERE
 # ===================================================================
@@ -2927,19 +3325,27 @@ if ($startupNewVersion) {
     Show-UpdatePrompt -NewVersion $startupNewVersion
 }
 
-# Test mode: If no path provided (e.g., double-clicking EXE), show folder picker for testing
+# Setup Mode: If no path provided (e.g., double-clicking EXE), show Setup Menu
 if ([string]::IsNullOrWhiteSpace($filePathFromQB)) {
-    Write-LogMessage "No path provided - entering test mode"
+    Write-LogMessage "No path provided - entering setup mode"
     
-    # Show folder picker for testing
-    $testPath = Select-ExtractionPath -DefaultPath ([Environment]::GetFolderPath('Desktop'))
+    do {
+        $runManual = Show-SetupMenu
+    } while ($runManual -eq [System.Windows.Forms.DialogResult]::Retry)
     
-    if ($testPath) {
-        $filePathFromQB = $testPath
-        Write-LogMessage "Test mode: User selected folder '$testPath'"
+    if ($runManual -eq [System.Windows.Forms.DialogResult]::OK) {
+        $manualPath = Select-ExtractionPath -DefaultPath ([Environment]::GetFolderPath('Desktop'))
+        if ($manualPath) {
+            $filePathFromQB = $manualPath
+            Write-LogMessage "Manual run: User selected folder '$manualPath'"
+        }
+        else {
+            Write-LogMessage "Manual run: User cancelled folder selection. Exiting."
+            exit 0
+        }
     }
     else {
-        Write-LogMessage "Test mode: User cancelled folder selection. Exiting."
+        Write-LogMessage "Dashboard closed. Exiting."
         exit 0
     }
 }

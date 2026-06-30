@@ -41,7 +41,7 @@ Docs/
 *.exe
 
 # Icon file
-*.ico
+# *.ico
 
 # Backup files (created during updates)
 *.bak

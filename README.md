@@ -4,7 +4,15 @@
 
 # qBitLauncher
 
-A PowerShell post-download handler for qBittorrent with a themed GUI for extracting archives and managing executables.
+An automated post-download workflow manager for qBittorrent and Windows Explorer. 
+
+qBitLauncher eliminates the need to manually navigate directories and extract archives after a torrent completes. It automatically intercepts finished downloads, handles extraction, and surfaces the primary executables in a clean GUI.
+
+### Core Capabilities
+- **Automated Extraction Intercept**: Hooks into qBittorrent's "Run on torrent finished" event to instantly prompt extraction for `.zip`, `.rar`, `.7z`, `.iso`, and `.img` archives.
+- **Smart Executable Discovery**: Recursively scans extracted directories to surface primary binaries (`.exe`, `.bat`), sorting them logically by directory depth.
+- **One-Click Cleanup**: Interfaces with qBittorrent's Local Web API to seamlessly remove torrents and optionally purge downloaded source data once installation is complete.
+- **Explorer Integration**: Integrates directly into the Windows Shift+Right-Click context menu for on-demand execution on any local folder or archive.
 
 ![PowerShell](https://img.shields.io/badge/PowerShell-5.1+-blue?logo=powershell)
 ![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D6?logo=windows)
@@ -44,25 +52,29 @@ git clone https://github.com/DeonHolo/qBitLauncher.git
 
 ### qBittorrent Integration
 
+The easiest way to integrate with qBittorrent is to use the built-in Dashboard:
+1. Double-click `qBitLauncher.exe` (or run `qBitLauncher.ps1` directly).
+2. Click **Install to qBittorrent** (make sure qBittorrent is closed first).
+
+**Manual Setup:**
 1. qBittorrent → **Tools** → **Options** → **Downloads**
 2. Under **"Run external program"**, enable **"Run on torrent finished"**
 3. Set command:
    ```
    powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\path\to\qBitLauncher.ps1" "%F" "%I" "%N"
    ```
-> **Note:** Replace `C:\path\to\qBitLauncher.ps1` with the actual path where you saved the script.
+> **Note:** If using the compiled `.exe`, the manual command is just `"C:\path\to\qBitLauncher.exe" "%F" "%I" "%N"`.
 > `%I` passes the torrent hash for qBittorrent cleanup. `%N` passes the torrent name for clearer confirmation dialogs.
 
 ### Context Menu Integration (Optional)
 
 Add "Open with qBitLauncher" to your **Shift+Right-click** context menu for folders and archive files.
 
-**Install:**
-1. Edit `Add-ContextMenu.reg` and verify the script path is correct
-2. Double-click `Add-ContextMenu.reg` → Click **Yes** to confirm
+The easiest way to integrate with context menus is via the Dashboard:
+1. Double-click `qBitLauncher.exe` (or run `qBitLauncher.ps1` directly).
+2. Click **Add Shift+Right-Click Context Menus**.
 
-**Uninstall:**
-- Double-click `Remove-ContextMenu.reg` to remove all context menu entries
+*(To remove the integration later, you can simply click **Remove Context Menus** in the Dashboard).*
 
 **Supported locations:**
 - Folders
@@ -118,15 +130,23 @@ Edit via **Settings** button or `config.json`:
 - **GUI**: Real-time Activity Log panel
 - **File**: `qBitLauncher_log.txt`
 
-## Development & Auto-Versioning
+## Development, Auto-Versioning & Releases
 
-This project uses an automated GitHub Actions workflow (`version-bump.yml`) to manage semantic versioning. When pushing to the `main` branch, include one of the following keywords in your commit message to automatically bump the version:
+This project uses automated GitHub Actions workflows to manage versions and releases:
 
-- `feat:` - Increments the MINOR version (e.g., 1.2.3 → 1.3.0). Rolls over to a new MAJOR version if MINOR exceeds 9.
-- `fix:` - Increments the PATCH version (e.g., 1.2.3 → 1.2.4). Rolls over to a new MINOR version if PATCH exceeds 9.
-- `BREAKING:` - Increments the MAJOR version (e.g., 1.2.3 → 2.0.0).
+1. **Auto-Versioning (`version-bump.yml`)**: 
+   When pushing to the `main` branch, include one of the following keywords in your commit message to automatically bump the version in `qBitLauncher.ps1`:
+   - `feat:` - Increments the MINOR version (e.g., 1.2.3 → 1.3.0). Rolls over to a new MAJOR version if MINOR exceeds 9.
+   - `fix:` - Increments the PATCH version (e.g., 1.2.3 → 1.2.4). Rolls over to a new MINOR version if PATCH exceeds 9.
+   - `BREAKING:` - Increments the MAJOR version (e.g., 1.2.3 → 2.0.0).
 
-The workflow will automatically update the `$Global:ScriptVersion` inside `qBitLauncher.ps1`, create a new commit, and push it. The script's built-in auto-updater will then detect this new version and prompt users to update.
+2. **Auto-Releases (`build-release.yml`)**:
+   Whenever a new version tag (e.g., `v3.1.0`) is pushed, GitHub Actions automatically uses `PS2EXE` to compile the `.ps1` script (along with the `.ico` logo) into a standalone `qBitLauncher.exe` and attaches it to a new GitHub Release.
+
+**The Built-in Updater**:
+The script's built-in auto-updater seamlessly handles both raw `.ps1` and compiled `.exe` users. 
+- For `.ps1` users, it fetches the latest raw code from the repository.
+- For `.exe` users, it pulls the latest `qBitLauncher.exe` directly from the GitHub Releases page, using a background script to seamlessly hot-swap the executable.
 
 ## License
 
