@@ -4,102 +4,108 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: write
+
+# Reject stale main pushes atomically and never interrupt an active release.
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
 jobs:
-  bump-version:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    outputs:
-      new_version: ${{ steps.calc_version.outputs.new }}
-      version_changed: ${{ steps.check_change.outputs.changed }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 0
-      
-      - name: Get current version
-        id: get_version
-        run: |
-          CURRENT_VERSION=$(grep -oP '\$Global:ScriptVersion\s*=\s*"\K[^"]+' qBitLauncher.ps1)
-          echo "current=$CURRENT_VERSION" >> $GITHUB_OUTPUT
-      
-      - name: Calculate new version
-        id: calc_version
-        env:
-          COMMITS_JSON: ${{ toJson(github.event.commits.*.message) }}
-        run: |
-          CURRENT="${{ steps.get_version.outputs.current }}"
-          IFS='.' read -ra PARTS <<< "$CURRENT"
-          MAJOR=${PARTS[0]:-1}
-          MINOR=${PARTS[1]:-0}
-          PATCH=${PARTS[2]:-0}
-          
-          # Check all commit messages in the push
-          if echo "$COMMITS_JSON" | grep -q "BREAKING:"; then
-            MAJOR=$((MAJOR + 1))
-            MINOR=0
-            PATCH=0
-          elif echo "$COMMITS_JSON" | grep -q "feat:"; then
-            MINOR=$((MINOR + 1))
-            PATCH=0
-          elif echo "$COMMITS_JSON" | grep -q "fix:"; then
-            PATCH=$((PATCH + 1))
-          fi
-          
-          NEW_VERSION="$MAJOR.$MINOR.$PATCH"
-          echo "new=$NEW_VERSION" >> $GITHUB_OUTPUT
-          
-      - name: Check if changed
-        id: check_change
-        run: |
-          if [ "${{ steps.get_version.outputs.current }}" != "${{ steps.calc_version.outputs.new }}" ]; then
-            echo "changed=true" >> $GITHUB_OUTPUT
-          else
-            echo "changed=false" >> $GITHUB_OUTPUT
-          fi
-          
-      - name: Update version, commit, and tag
-        if: steps.check_change.outputs.changed == 'true'
-        run: |
-          NEW_VERSION="${{ steps.calc_version.outputs.new }}"
-          sed -i 's/\$Global:ScriptVersion = "[^"]*"/\$Global:ScriptVersion = "'"$NEW_VERSION"'"/' qBitLauncher.ps1
-          
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          git add qBitLauncher.ps1
-          git commit -m "chore: bump version to $NEW_VERSION"
-          
-          # Create tag
-          git tag "v$NEW_VERSION"
-          
-          # Push commit and tags
-          git push origin main
-          git push origin "v$NEW_VERSION"
-
-  build-release:
-    needs: bump-version
-    if: needs.bump-version.outputs.version_changed == 'true'
+  validate-and-release:
+    if: github.actor != 'github-actions[bot]'
     runs-on: windows-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: refs/tags/v${{ needs.bump-version.outputs.new_version }}
-          
-      - name: Install PS2EXE
-        run: Install-Module -Name PS2EXE -Scope CurrentUser -Force
-        shell: powershell
+          fetch-depth: 0
 
-      - name: Compile Executable
-        run: ps2exe -inputFile "qBitLauncher.ps1" -outputFile "qBitLauncher.exe" -iconFile "qBitLauncher Logo.ico" -noConsole
+      - name: Calculate the next version
+        id: version
         shell: powershell
+        env:
+          PUSH_MESSAGES: ${{ toJson(github.event.commits.*.message) }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $template = [IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE 'Source\App.ps1'))
+          $match = [regex]::Match($template, '(?m)^\$Global:ScriptVersion\s*=\s*"(\d+\.\d+\.\d+)"\s*$')
+          if (-not $match.Success) { throw 'No numeric version was found in Source/App.ps1.' }
+          $current = [Version]$match.Groups[1].Value
+          $tag = 'v' + $current.ToString()
+          git rev-parse --verify --quiet "refs/tags/$tag" *> $null
+          if ($LASTEXITCODE -eq 0) {
+            # Include unreleased commits from superseded or documentation-only pushes.
+            $messages = (git log "$tag..HEAD" --format=%B) -join "`n"
+            if ($LASTEXITCODE -ne 0) { throw 'Could not read unreleased commits.' }
+          } else {
+            $messages = (($env:PUSH_MESSAGES | ConvertFrom-Json) -join "`n")
+          }
+          $major = $current.Major; $minor = $current.Minor; $patch = $current.Build
+          if ($messages.Contains('BREAKING:')) { $major++; $minor = 0; $patch = 0 }
+          elseif ($messages.Contains('feat:')) { $minor++; $patch = 0 }
+          elseif ($messages.Contains('fix:')) { $patch++ }
+          $next = "$major.$minor.$patch"
+          $changed = ($next -ne $current.ToString()).ToString().ToLowerInvariant()
+          "changed=$changed" >> $env:GITHUB_OUTPUT
+          "number=$next" >> $env:GITHUB_OUTPUT
+          # A missing previous tag is an expected first-release case.
+          $global:LASTEXITCODE = 0
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: v${{ needs.bump-version.outputs.new_version }}
-          name: Release v${{ needs.bump-version.outputs.new_version }}
-          files: qBitLauncher.exe
-          body: Automated release build for qBitLauncher v${{ needs.bump-version.outputs.new_version }}.
+      - name: Validate the source and run Windows regression checks
+        shell: powershell
+        run: .\Build.ps1 -SkipCompile
+
+      - name: Version the template and build release assets
+        if: steps.version.outputs.changed == 'true'
+        shell: powershell
+        env:
+          NEW_VERSION: ${{ steps.version.outputs.number }}
+          EXPECTED_HEAD: ${{ github.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $remote = (git ls-remote --heads origin main)
+          if ($LASTEXITCODE -ne 0 -or ($remote -split '\s+')[0] -ne $env:EXPECTED_HEAD) {
+            throw 'main moved while validation was running; the newer queued push will handle the release.'
+          }
+          $templatePath = Join-Path $env:GITHUB_WORKSPACE 'Source\App.ps1'
+          $template = [IO.File]::ReadAllText($templatePath)
+          $template = [regex]::Replace($template, '(?m)^(\$Global:ScriptVersion\s*=\s*")\d+\.\d+\.\d+("\s*)$', ('${1}' + $env:NEW_VERSION + '${2}'))
+          [IO.File]::WriteAllText($templatePath, $template, (New-Object Text.UTF8Encoding($true)))
+          # Only the numeric version changed after the preceding test gate.
+          $releaseDirectory = Join-Path $env:RUNNER_TEMP 'qBitLauncher-release'
+          .\Build.ps1 -SkipTests -OutputPath (Join-Path $releaseDirectory 'qBitLauncher.exe')
+
+      - name: Commit version and atomically push its tag
+        if: steps.version.outputs.changed == 'true'
+        shell: powershell
+        env:
+          NEW_VERSION: ${{ steps.version.outputs.number }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = 'v' + $env:NEW_VERSION
+          git config --local user.email 'github-actions[bot]@users.noreply.github.com'
+          git config --local user.name 'github-actions[bot]'
+          git add -- Source/App.ps1 qBitLauncher.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Could not stage the versioned source.' }
+          git commit -m "chore: bump version to $env:NEW_VERSION"
+          if ($LASTEXITCODE -ne 0) { throw 'Could not commit the version.' }
+          git tag $tag
+          if ($LASTEXITCODE -ne 0) { throw 'The release tag already exists or could not be created.' }
+          git push --atomic origin HEAD:refs/heads/main "refs/tags/$tag"
+          if ($LASTEXITCODE -ne 0) { throw 'The atomic release push was rejected; no release was published.' }
+
+      - name: Publish the verified release
+        if: steps.version.outputs.changed == 'true'
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          NEW_VERSION: ${{ steps.version.outputs.number }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $releaseDirectory = Join-Path $env:RUNNER_TEMP 'qBitLauncher-release'
+          $assets = @('qBitLauncher.exe', 'qBitLauncher.ps1', 'SHA256SUMS.txt') | ForEach-Object { Join-Path $releaseDirectory $_ }
+          foreach ($asset in $assets) { if (-not [IO.File]::Exists($asset)) { throw "Missing release asset: $asset" } }
+          gh release create ("v" + $env:NEW_VERSION) @assets --verify-tag --latest --title ("Release v" + $env:NEW_VERSION) --generate-notes
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub release publication failed.' }

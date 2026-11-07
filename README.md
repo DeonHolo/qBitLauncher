@@ -1,102 +1,103 @@
 <p align="center">
-  <img src="https://i.imgur.com/0epFbuH.png" alt="qBitLauncher Logo" width="128">
+  <img src="https://i.imgur.com/0epFbuH.png" alt="qBitLauncher logo" width="96">
 </p>
 
 # qBitLauncher
 
-An automated post-download workflow manager for qBittorrent and Windows Explorer. 
+qBitLauncher opens when a qBittorrent download finishes, helps you extract it, and shows the EXE, BAT, or CMD files you can run. You can also open folders and archives from Windows Explorer.
 
-qBitLauncher eliminates the need to manually navigate directories and extract archives after a torrent completes. It automatically intercepts finished downloads, handles extraction, and surfaces the primary executables in a clean GUI.
+![qBitLauncher showing shortcut names, original filenames, search, and the activity log in its dark theme](Docs/images/qBitLauncher-Dracula.png)
 
-![PowerShell](https://img.shields.io/badge/PowerShell-5.1+-blue?logo=powershell)
-![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D6?logo=windows)
-![License](https://img.shields.io/badge/License-MIT-green)
+[Download](https://github.com/DeonHolo/qBitLauncher/releases/latest) · [Usage](Docs/usage.md) · [Project wiki](Docs/wiki/Home.md) · [Troubleshooting](Docs/wiki/Troubleshooting.md) · [Development](Docs/development.md)
 
-### What It Does
-- **Automated Extraction Intercept**: Hooks into qBittorrent's "Run on torrent finished" event to instantly prompt extraction for `.zip`, `.rar`, `.7z`, `.iso`, and `.img` archives.
-- **Smart Executable Discovery**: Recursively scans extracted directories to surface primary binaries (`.exe`, `.bat`), sorting them logically by directory depth.
-- **One-Click Cleanup**: Interfaces with qBittorrent's Local Web API to seamlessly remove torrents and optionally purge downloaded source data once installation is complete.
-- **Explorer Integration**: Integrates directly into the Windows Shift+Right-Click context menu for on-demand execution on any local folder or archive.
+## Get started
 
+You need Windows 10 or 11 with Windows PowerShell 5.1. Install [7-Zip](https://www.7-zip.org/) or [WinRAR](https://www.win-rar.com/) to extract archives. You can scan folders and create shortcuts without either extractor.
 
-<p align="center">
-  <img src="https://i.imgur.com/Y3974UK.png" alt="qBitLauncher GUI Screenshot" width="650">
-</p>
+1. Download `qBitLauncher.exe` from [Releases](https://github.com/DeonHolo/qBitLauncher/releases/latest) and open it.
+2. Choose an installation folder or portable mode.
+3. Close qBittorrent completely, then use **Install / update qBittorrent integration** in the dashboard.
+4. Optionally add the **Shift+right-click context menus** for Explorer. **Choose a folder...** works without either integration.
 
-## Features
+qBittorrent sends the finished download to qBitLauncher. Choose an extraction destination, reuse an existing extracted folder, or skip extraction and scan the original folder. The destination base is remembered. RAR files prefer WinRAR; other supported archives prefer 7-Zip. The extractor shows its own progress and cancellation controls.
 
-- 🗜️ **External extraction** - Extracts ZIP, RAR, 7z, ISO, and IMG archives through the installed 7-Zip or WinRAR GUI
-- 📂 **Custom extraction path** - Choose where to extract with modern folder picker
-- 🔍 **Smart executable discovery** - Finds .exe files with icons, sorted by folder depth
-- ✏️ **Inline rename** - Rename executables directly (F2, double-click, or right-click)
-- 📋 **Activity Log** - Real-time log panel showing all actions
-- 🎨 **Themed GUI** - Dracula dark theme with Light mode option
-- 🛡️ **Admin launch** - Run selected executables with UAC elevation
-- 🔔 **Action feedback** - Themed dialogs and sound effects for all actions
-- 📦 **Auto-update** - Checks for updates on startup
-- 🧹 **qBittorrent cleanup** - Remove the torrent from qBittorrent after extraction/installation, with optional data deletion
+Different games can extract at the same time. A large extraction or an open result window does not hold up another game. Opening the same source twice is blocked to prevent duplicate extraction.
 
-## Requirements
+## Find the right file
 
-- Windows 10/11
-- PowerShell 5.1+
-- [7-Zip](https://www.7-zip.org/) (recommended) or [WinRAR](https://www.win-rar.com/)
+Search matches shortcut names and original file paths, including non-English characters. Likely applications and installers appear ahead of support tools; **Show helpers** reveals uninstallers, crash handlers, and maintenance tools. This ranking uses filenames and paths, so check the original file before running it.
 
-## Installation
+Select a file and click **Run**. **More → Launch options** opens the arguments field and administrator checkbox. qBitLauncher remembers these choices for each file, along with the preferred executable for each folder, recent folders, and window and column sizes. New files use administrator mode by default; change that under **More → Settings**.
 
-The easiest way to install qBitLauncher is to download the compiled executable.
+## Name a desktop shortcut
 
-1. **Download the latest `.exe`** from the [GitHub Releases](https://github.com/DeonHolo/qBitLauncher/releases/latest) page.
-2. **Run it** to launch the Setup window and install it to a permanent location.
-   > **Note:** Windows SmartScreen may flag the executable as an unrecognized app because it is from a new publisher. To proceed, simply click **More Info** followed by **Run anyway**.
-3. **Click "Install to qBittorrent"** from the Dashboard.
+Press **F2**, double-click a row, or click **Shortcut Name** to edit the name for a future desktop shortcut. **Enter** saves, **Escape** cancels, and clicking outside saves.
 
-**For Developers (Source Code):**
-```bash
-git clone https://github.com/DeonHolo/qBitLauncher.git
-```
-*You can run `qBitLauncher.ps1` directly, or compile your own `.exe` using the included `Compile.ps1` script.*
+For example, give `setup.exe` the shortcut name `Game Installer`. Clicking **Shortcut** creates `Game Installer.lnk` on the desktop. The original file stays named `setup.exe`; changing the label also leaves existing desktop shortcuts alone. This works for EXE, BAT, and CMD files, including non-English filenames and folders.
 
-### qBittorrent Integration
+Shortcuts use the selected target, its working folder, and saved launch arguments. If a shortcut already has that name, choose to replace it, keep both with a numbered name, or cancel. The administrator checkbox controls launching from qBitLauncher; it does not make desktop shortcuts always request elevation.
 
-The easiest way to integrate with qBittorrent is to use the built-in Dashboard:
-1. Double-click `qBitLauncher.exe` (or run `qBitLauncher.ps1` directly).
-2. Click **Install to qBittorrent** (make sure qBittorrent is closed first).
+## Remove what you no longer need
 
-**Manual Setup:**
-1. qBittorrent → **Tools** → **Options** → **Downloads**
-2. Under **"Run external program"**, enable **"Run on torrent finished"**
-3. Set command:
-   ```
-   powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\path\to\qBitLauncher.ps1" "%F" "%I" "%N"
-   ```
-> **Note:** If using the compiled `.exe`, the manual command is just `"C:\path\to\qBitLauncher.exe" "%F" "%I" "%N"`.
-> `%I` passes the torrent hash for qBittorrent cleanup. `%N` passes the torrent name for clearer confirmation dialogs.
+Open **Cleanup** and tick any combination:
 
-## Configuration
+| Item | What it removes |
+| --- | --- |
+| **Source files** | The original archive or download contents. Unticked extracted files stay on disk, even when they are inside the source folder. |
+| **Extracted files** | The extracted folder, which may contain an installer or the game itself. Removing it requires acknowledgement when it includes the extracted app or selected file. |
+| **qBittorrent entry** | The torrent entry. File deletion is controlled by the two checkboxes above. This option needs a torrent hash from qBittorrent. |
 
-Edit via **Settings** button or `config.json`:
-```json
-{
-  "Theme": "Dracula",
-  "QbittorrentWebUrl": "http://localhost:8080",
-  "QbittorrentUsername": "",
-  "QbittorrentPassword": ""
-}
+Tick all three to remove the source, extracted files, and torrent entry together. Local files go to the Recycle Bin by default. **Permanently delete files (skip Recycle Bin)** requires another confirmation.
+
+If the extracted folder is the playable game, leave **Extracted files** unticked. If it only contains an installer you have finished using, you can remove it. qBitLauncher shows the locations and checks the removal plan; it cannot decide which files you still need.
+
+![Cleanup with source files, extracted files, and the qBittorrent entry selected together](Docs/images/qBitLauncher-Cleanup-Dracula.png)
+
+Screenshots use disposable example files. [The usage guide](Docs/usage.md#cleanup-choose-what-to-keep) covers overlapping locations, junctions, and failed cleanup steps.
+
+## Manual qBittorrent setup
+
+In qBittorrent, open **Tools → Options → Downloads** and enable **Run on torrent finished** under **Run external program**. Use your actual installation path:
+
+```text
+"C:\path\to\qBitLauncher.exe" "%F" "%I" "%N"
 ```
 
-**Themes**: `Dracula`, `Light`
+`%F` is the content path, `%I` the torrent hash, and `%N` the torrent name. The hash enables the cleanup checkbox for the qBittorrent entry. Explorer and manual folder workflows can still remove local source or extracted files.
 
-**Remove Torrent** uses qBittorrent's local API. qBitLauncher will offer to enable that API the first time cleanup needs it; you do not need to keep a WebUI page open. If qBittorrent requires authentication for localhost, enter the API username/password in **Settings**.
+To run the standalone script instead:
 
-## Supported Extensions
+```text
+powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\path\to\qBitLauncher.ps1" "%F" "%I" "%N"
+```
+
+## Settings, logs, and updates
+
+**More → Settings** contains the dark and light themes, extraction base folder, launch default, update checks, and qBittorrent API URL and credentials. Torrent removal uses qBittorrent's local API. Repair previews its changes and preserves existing authentication settings; enter the existing API credentials if localhost requires a login.
+
+Settings stay in `config.json` beside the app. Saved API passwords are encrypted for the current Windows user. If you move the config to another Windows account, re-enter the password through Settings. Shortcut labels and launch preferences follow the original file path.
+
+**More → Open Log** opens `%LOCALAPPDATA%\qBitLauncher\logs\qBitLauncher.log`. **Copy Error** copies the last error with credentials redacted. Separate windows merge saved changes so one game's settings do not overwrite another's.
+
+Update checks run in the background. When an update is available, Settings offers to install it. Downloads are checked against a published SHA-256 checksum, and replacement keeps a rollback backup.
+
+## Supported files
 
 | Type | Extensions |
-|------|------------|
+| --- | --- |
 | Runnables | `exe`, `bat`, `cmd` |
-| Archives | `iso`, `zip`, `rar`, `7z`, `img` |
-| Media | `mp4`, `mkv`, `avi`, `mov`, `wmv`, `flv`, `webm`, `mp3`, `flac`, `wav`, `aac`, `ogg`, `m4a` |
+| Archives | `zip`, `rar`, `7z`, `iso`, `img`, plus first `zip.001` and `7z.001` volumes |
 
-## License
+For multipart archives, keep the remaining volumes beside the first. The installed extractor handles the archive contents. When there is no runnable or supported archive, qBitLauncher opens the folder for inspection.
 
-qBitLauncher is released under the MIT License. See [LICENSE](LICENSE) for details.
+## Build from source
+
+Edit the files in `Source/`, then run this from the repository root:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Build.ps1
+```
+
+The build generates the standalone `qBitLauncher.ps1`, runs the Windows checks, compiles the EXE with PS2EXE 1.0.17, and writes `SHA256SUMS.txt`. It preserves the previous executable and does not terminate a running app. `Compile.ps1` uses the same build.
+
+See [Development](Docs/development.md) for individual checks, staged builds, and the release workflow. qBitLauncher is released under the [MIT License](LICENSE).

@@ -34,8 +34,7 @@ Desktop.ini
 .Spotlight-V100
 .Trashes
 
-# Internal Documentation
-docs/
+# Project documentation under Docs/ is versioned with the source.
 
 # Compiled executable (PS2EXE output)
 
@@ -49,3 +48,6 @@ docs/
 config.json
 
 *.exe
+
+# Generated local release checksums
+/SHA256SUMS.txt

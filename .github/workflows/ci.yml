@@ -1,0 +1,33 @@
+name: Windows validation
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-and-build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate, test, and build the standalone application
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $artifactDirectory = Join-Path $env:RUNNER_TEMP 'qBitLauncher-validation'
+          .\Build.ps1 -OutputPath (Join-Path $artifactDirectory 'qBitLauncher.exe') -SourceOutputPath (Join-Path $artifactDirectory 'qBitLauncher.ps1')
+
+      - name: Upload verified application and checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: qBitLauncher-windows
+          path: ${{ runner.temp }}/qBitLauncher-validation/
+          if-no-files-found: error
