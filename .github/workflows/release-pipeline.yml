@@ -47,8 +47,7 @@ jobs:
           elseif ($messages.Contains('fix:')) { $patch++ }
           $next = "$major.$minor.$patch"
           $changed = ($next -ne $current.ToString()).ToString().ToLowerInvariant()
-          "changed=$changed" >> $env:GITHUB_OUTPUT
-          "number=$next" >> $env:GITHUB_OUTPUT
+          @("changed=$changed", "number=$next") | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           # A missing previous tag is an expected first-release case.
           $global:LASTEXITCODE = 0
 

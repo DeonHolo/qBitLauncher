@@ -273,7 +273,11 @@ try {
                 $editor = Get-UITestControl $form 'ShortcutNameEditor'
                 Assert-UICheck ($list.IsShortcutNameEditing -and $form.Controls.Find('ShortcutNameEditor', $true).Count -eq 1) 'Inline editing must create exactly one name editor.'
                 Assert-UICheck ($editor.Parent.Parent -eq $list -and $editor.Parent.Top -ge $item.Bounds.Top -and $editor.Parent.Bottom -le $item.Bounds.Bottom) 'The name editor must stay inside the existing row.'
-                Assert-UICheck ($editor.Parent.Left -gt $item.Bounds.Left + 20 -and $editor.Parent.Right -le $item.Bounds.Left + $list.Columns[0].Width) 'The editor must line up after the icon and stay inside the shortcut-name column.'
+                $list.Update()
+                $hasIcon = $list.SmallImageList -and $item.ImageIndex -ge 0 -and $item.ImageIndex -lt $list.SmallImageList.Images.Count
+                $textLeft = $item.Bounds.Left + 10
+                if ($hasIcon) { $textLeft += [Math]::Min(20, $item.Bounds.Height - 4) + 8 }
+                Assert-UICheck ($editor.Parent.Left -eq $textLeft -and $editor.Parent.Right -le $item.Bounds.Left + $list.Columns[0].Width) 'The editor must align with the displayed label, including before optional icons finish loading, and stay inside its column.'
                 Assert-UICheck ($editor.BackColor.ToArgb() -eq $list.BackColor.ToArgb() -and $editor.ForeColor.ToArgb() -eq $list.ForeColor.ToArgb() -and $editor.BorderStyle -eq 'None') 'Inline editing must use the list colors without a native white frame.'
                 $editor.Text = 'Typing a new ' + $unicodeName + ' label'
                 Assert-UICheck ($item.Text -ceq $aliases[$game] -and (Get-FilePreference $game).Label -ceq $aliases[$game]) 'Typing must not save before the edit is committed.'
