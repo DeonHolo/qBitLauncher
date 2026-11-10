@@ -30,12 +30,12 @@ try {
     [IO.Directory]::CreateDirectory($fixtureSource) | Out-Null
     $template = "param([string]`$InputPath)`n# <BUNDLED_FUNCTIONS>`n`$Global:ScriptVersion = `"1.2.3`"`n"
     [IO.File]::WriteAllText((Join-Path $fixtureSource 'App.ps1'), $template)
-    $moduleNames = @('Services', 'Updates', 'Workflow', 'UI')
+    $moduleNames = @('Services', 'Updates', 'Workflow', 'Extraction', 'UI')
     foreach ($name in $moduleNames) {
         [IO.File]::WriteAllText((Join-Path $fixtureSource ($name + '.ps1')), ('function Test' + $name + ' { return 1 }'))
     }
     $bundle = Get-BundledApplicationSource -ProjectRoot $testRoot
-    Assert-BuildTest ($bundle.Contains('function TestServices') -and $bundle.Contains('function TestUpdates') -and $bundle.Contains('function TestWorkflow') -and $bundle.Contains('function TestUI')) 'The bundle omitted a development module.'
+    Assert-BuildTest ($bundle.Contains('function TestServices') -and $bundle.Contains('function TestUpdates') -and $bundle.Contains('function TestWorkflow') -and $bundle.Contains('function TestExtraction') -and $bundle.Contains('function TestUI')) 'The bundle omitted a development module.'
     Assert-BuildTest (-not $bundle.Contains('# <BUNDLED_FUNCTIONS>')) 'The bundle still contains its insertion marker.'
     Assert-BuildTest ($bundle.IndexOf('function TestServices') -lt $bundle.IndexOf('function TestUpdates') -and $bundle.IndexOf('function TestUpdates') -lt $bundle.IndexOf('function TestWorkflow') -and $bundle.IndexOf('function TestWorkflow') -lt $bundle.IndexOf('function TestUI')) 'Module order changed.'
     Assert-BuildTest ((Get-BuildVersion -SourceText $bundle).ToString() -eq '1.2.3') 'The version was not read from the template.'

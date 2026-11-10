@@ -238,33 +238,214 @@ function Start-Runnable {
     if ($process) { $process.Dispose() }
 }
 
-function Get-FolderInventory {
-    param([string]$RootFolder)
-    $root = Get-Item -LiteralPath $RootFolder -Force -ErrorAction Stop
-    $runnables = New-Object 'System.Collections.Generic.List[object]'
-    $archives = New-Object 'System.Collections.Generic.List[object]'
-    $media = New-Object 'System.Collections.Generic.List[object]'
-    $skipped = New-Object 'System.Collections.Generic.List[string]'
-    $pending = New-Object 'System.Collections.Generic.Stack[System.IO.DirectoryInfo]'
-    $pending.Push($root)
-    while ($pending.Count) {
-        $directory = $pending.Pop()
-        try { $entries = $directory.GetFileSystemInfos() } catch { $skipped.Add($directory.FullName); continue }
-        foreach ($entry in $entries) {
-            if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { $skipped.Add($entry.FullName); continue }
-            if ($entry -is [IO.DirectoryInfo]) { $pending.Push($entry); continue }
-            $extension = $entry.Extension.ToLowerInvariant()
-            if ($extension -in @('.exe', '.bat', '.cmd')) { $runnables.Add($entry) }
-            elseif ($extension -in @('.zip', '.rar', '.7z', '.iso', '.img') -or $entry.Name -match '(?i)\.(?:7z|zip)\.001$') { $archives.Add($entry) }
-            elseif ($extension -in @('.mp4', '.mkv', '.avi', '.mov', '.mp3', '.flac', '.wav', '.ogg', '.webm', '.m4a')) { $media.Add($entry) }
+function Initialize-FolderScanner {
+    if ('QBitLauncher.FolderScan' -as [type]) { return }
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Security;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Text;
+using System.Text.RegularExpressions;
+namespace QBitLauncher {
+    public sealed class ArchiveOutputFile {
+        public string Path;
+        public long Length;
+        public ArchiveOutputFile(string path,long length) { Path=path; Length=length; }
+    }
+    public sealed class ArchiveOutputCheck {
+        public bool Valid;
+        public int Checked;
+        public string[] Problems;
+        public string DestinationPath;
+    }
+    public sealed class FolderScanProgress {
+        public readonly long Files;
+        public readonly int Folders, PendingFolders, Runnables, Skipped;
+        public readonly string CurrentPath;
+        public readonly string Phase;
+        public readonly bool Complete;
+        public FolderScanProgress(long files, int folders, int pending, int runnables, int skipped, string path, bool complete, string phase="Scanning files") {
+            Files=files; Folders=folders; PendingFolders=pending; Runnables=runnables; Skipped=skipped; CurrentPath=path; Complete=complete;
+            Phase=phase;
         }
     }
-    $sorted = @($runnables | Sort-Object @{ Expression = { (Get-RunnableRank $_ $RootFolder).Score }; Descending = $true }, FullName)
-    $payloads = @($archives | Where-Object {
+    public sealed class FolderScanResult {
+        public string RootFolder;
+        public FileInfo[] Runnables, AllArchives, Media;
+        public string[] Skipped;
+        public bool Complete;
+        public ArchiveOutputCheck OutputCheck;
+    }
+    public sealed class FolderScan : IDisposable {
+        readonly string root;
+        readonly string archivePath, listTool;
+        readonly CancellationTokenSource cancellation = new CancellationTokenSource();
+        readonly object gate = new object();
+        readonly List<FileInfo> runnables = new List<FileInfo>(), archives = new List<FileInfo>(), media = new List<FileInfo>();
+        readonly List<string> skipped = new List<string>();
+        FolderScanProgress progress;
+        int disposed;
+        ArchiveOutputCheck outputCheck;
+        public Task<FolderScanResult> Operation { get; private set; }
+        public FolderScanProgress Progress { get { return Volatile.Read(ref progress); } }
+        public FolderScan(string path) : this(path,null,null) { }
+        public FolderScan(string path,string archive,string tool) {
+            root=Path.GetFullPath(path);
+            archivePath=archive; listTool=tool;
+            progress=new FolderScanProgress(0,0,1,0,0,root,false);
+            Operation=Task.Factory.StartNew<FolderScanResult>(new Func<FolderScanResult>(Scan), cancellation.Token, TaskCreationOptions.None, TaskScheduler.Default);
+        }
+        public FolderScanResult Snapshot(bool complete) {
+            lock(gate) { return new FolderScanResult { RootFolder=root, Runnables=runnables.ToArray(), AllArchives=archives.ToArray(), Media=media.ToArray(), Skipped=skipped.ToArray(), Complete=complete, OutputCheck=outputCheck }; }
+        }
+        public void Cancel() { if(Volatile.Read(ref disposed)==0) cancellation.Cancel(); }
+        public void Dispose() {
+            if(Interlocked.Exchange(ref disposed,1)!=0) return;
+            cancellation.Cancel();
+            // Never wait on disk I/O from the UI thread, including cancellation.
+            Operation.ContinueWith(task => { if(task.IsFaulted) { var observed=task.Exception; } cancellation.Dispose(); }, TaskScheduler.Default);
+        }
+        FolderScanResult Scan() {
+            CancellationToken token=cancellation.Token;
+            DirectoryInfo start=new DirectoryInfo(root);
+            if(!start.Exists) throw new DirectoryNotFoundException("The scan folder is missing or inaccessible: "+root);
+            if((start.Attributes & FileAttributes.Directory)==0) throw new IOException("Choose a folder to scan: "+root);
+            Queue<DirectoryInfo> pending=new Queue<DirectoryInfo>(); pending.Enqueue(start);
+            long files=0; int folders=0;
+            Stopwatch pulse=Stopwatch.StartNew();
+            while(pending.Count>0) {
+                token.ThrowIfCancellationRequested();
+                DirectoryInfo directory=pending.Dequeue();
+                Publish(files,folders,pending.Count+1,directory.FullName,false);
+                try {
+                    // Stream metadata only. Do not read payloads or allocate an
+                    // array for every file in a large directory.
+                    using(IEnumerator<FileSystemInfo> entries=directory.EnumerateFileSystemInfos().GetEnumerator()) {
+                        while(true) {
+                            token.ThrowIfCancellationRequested();
+                            if(!entries.MoveNext()) break;
+                            FileSystemInfo entry=entries.Current;
+                            try {
+                                if((entry.Attributes & FileAttributes.ReparsePoint)!=0) { lock(gate) skipped.Add(entry.FullName); continue; }
+                                DirectoryInfo child=entry as DirectoryInfo;
+                                if(child!=null) { pending.Enqueue(child); continue; }
+                                files++;
+                                FileInfo file=(FileInfo)entry;
+                                string extension=file.Extension.ToLowerInvariant();
+                                if(extension==".exe" || extension==".bat" || extension==".cmd") { lock(gate) runnables.Add(file); }
+                                else if(extension==".zip" || extension==".rar" || extension==".7z" || extension==".iso" || extension==".img" || file.Name.EndsWith(".7z.001",StringComparison.OrdinalIgnoreCase) || file.Name.EndsWith(".zip.001",StringComparison.OrdinalIgnoreCase)) { lock(gate) archives.Add(file); }
+                                else if(extension==".mp4" || extension==".mkv" || extension==".avi" || extension==".mov" || extension==".wmv" || extension==".flv" || extension==".mp3" || extension==".flac" || extension==".wav" || extension==".aac" || extension==".ogg" || extension==".webm" || extension==".m4a") { lock(gate) media.Add(file); }
+                            } catch(UnauthorizedAccessException) { lock(gate) skipped.Add(entry.FullName); }
+                              catch(IOException) { lock(gate) skipped.Add(entry.FullName); }
+                              catch(SecurityException) { lock(gate) skipped.Add(entry.FullName); }
+                            if(pulse.ElapsedMilliseconds>=150) { Publish(files,folders,pending.Count+1,directory.FullName,false); pulse.Restart(); }
+                        }
+                    }
+                } catch(UnauthorizedAccessException) { lock(gate) skipped.Add(directory.FullName); }
+                  catch(IOException) { lock(gate) skipped.Add(directory.FullName); }
+                  catch(SecurityException) { lock(gate) skipped.Add(directory.FullName); }
+                folders++;
+            }
+            token.ThrowIfCancellationRequested();
+            if(!String.IsNullOrEmpty(archivePath) && !String.IsNullOrEmpty(listTool)) {
+                Publish(files,folders,0,archivePath,false,"Checking archive file list");
+                ArchiveOutputFile[] manifest=ReadArchiveManifest(archivePath,listTool,15000,token);
+                if(manifest!=null) {
+                    outputCheck=ValidateArchiveOutput(manifest,root,token,path=>Publish(files,folders,0,path,false,"Checking extracted file sizes"));
+                }
+            }
+            Publish(files,folders,0,root,true);
+            return Snapshot(true);
+        }
+        void Publish(long files,int folders,int pending,string path,bool complete,string phase="Scanning files") {
+            lock(gate) { Volatile.Write(ref progress,new FolderScanProgress(files,folders,pending,runnables.Count,skipped.Count,path,complete,phase)); }
+        }
+        public static ArchiveOutputFile[] ReadArchiveManifest(string archive,string tool,int timeout,CancellationToken token) {
+            if(String.IsNullOrEmpty(tool) || !File.Exists(tool)) return null;
+            using(Process process=new Process()) {
+                process.StartInfo=new ProcessStartInfo { FileName=tool, Arguments="l -slt -ba -sccUTF-8 -p- -- \""+archive+"\"", UseShellExecute=false, CreateNoWindow=true, RedirectStandardOutput=true, RedirectStandardError=true, StandardOutputEncoding=Encoding.UTF8 };
+                bool started=false;
+                try {
+                    process.Start(); started=true;
+                    Task<string> output=process.StandardOutput.ReadToEndAsync(), errors=process.StandardError.ReadToEndAsync();
+                    Stopwatch watch=Stopwatch.StartNew();
+                    while(!process.WaitForExit(Math.Min(100,Math.Max(1,timeout)))) {
+                        token.ThrowIfCancellationRequested();
+                        if(watch.ElapsedMilliseconds>=timeout) return null;
+                    }
+                    token.ThrowIfCancellationRequested();
+                    if(process.ExitCode!=0) return null;
+                    while(!output.IsCompleted || !errors.IsCompleted) {
+                        token.ThrowIfCancellationRequested();
+                        if(watch.ElapsedMilliseconds>=timeout) return null;
+                        Thread.Sleep(10);
+                    }
+                    string text=output.GetAwaiter().GetResult(); errors.GetAwaiter().GetResult();
+                    List<ArchiveOutputFile> entries=new List<ArchiveOutputFile>();
+                    foreach(string block in Regex.Split(text,@"\r?\n\s*\r?\n")) {
+                        token.ThrowIfCancellationRequested();
+                        Match path=Regex.Match(block,@"(?m)^Path = (.+)\r?$"), length=Regex.Match(block,@"(?m)^Size = ([0-9]+)\r?$");
+                        long bytes;
+                        if(!path.Success || !length.Success || !Int64.TryParse(length.Groups[1].Value,out bytes) || Regex.IsMatch(block,@"(?m)^Folder = \+\r?$|^Attributes = D")) continue;
+                        entries.Add(new ArchiveOutputFile(path.Groups[1].Value.TrimEnd('\r'),bytes));
+                    }
+                    return entries.Count==0 ? null : entries.ToArray();
+                } catch(OperationCanceledException) { throw; }
+                  catch(Exception) { return null; }
+                finally { if(started) { try { if(!process.HasExited) { process.Kill(); process.WaitForExit(500); } } catch(InvalidOperationException) { } } }
+            }
+        }
+        public static ArchiveOutputCheck ValidateArchiveOutput(ArchiveOutputFile[] manifest,string destination,CancellationToken token,Action<string> onProgress) {
+            string root=Path.GetFullPath(destination).TrimEnd('\\','/')+Path.DirectorySeparatorChar;
+            List<string> problems=new List<string>(); int count=0;
+            Stopwatch pulse=Stopwatch.StartNew();
+            foreach(ArchiveOutputFile entry in manifest) {
+                token.ThrowIfCancellationRequested();
+                string path=Path.GetFullPath(Path.Combine(root,entry.Path.Replace('/','\\')));
+                if(Path.IsPathRooted(entry.Path) || !path.StartsWith(root,StringComparison.OrdinalIgnoreCase)) throw new IOException("The archive contains a path outside the extraction destination.");
+                try {
+                    FileInfo file=new FileInfo(path);
+                    if(!file.Exists) problems.Add("Missing: "+entry.Path);
+                    else if(file.Length!=entry.Length) problems.Add(String.Format("Incomplete: {0} ({1:N0} of {2:N0} bytes)",entry.Path,file.Length,entry.Length));
+                } catch(IOException) { problems.Add("Cannot check: "+entry.Path); }
+                  catch(UnauthorizedAccessException) { problems.Add("Cannot check: "+entry.Path); }
+                  catch(SecurityException) { problems.Add("Cannot check: "+entry.Path); }
+                count++;
+                if(onProgress!=null && pulse.ElapsedMilliseconds>=150) { onProgress(path); pulse.Restart(); }
+            }
+            return new ArchiveOutputCheck { Valid=count>0 && problems.Count==0, Checked=count, Problems=problems.ToArray(), DestinationPath=destination };
+        }
+    }
+}
+'@ -ErrorAction Stop
+}
+
+function ConvertTo-FolderInventory {
+    param($ScanResult)
+    $root = $ScanResult.RootFolder
+    $sorted = @($ScanResult.Runnables | Sort-Object @{ Expression = { (Get-RunnableRank $_ $root).Score }; Descending = $true }, FullName)
+    $payloads = @($ScanResult.AllArchives | Where-Object {
         $_.FullName -notmatch '(?i)[\\/](?:plugins|_Data|resources|assets|redist|crack)[\\/]' -and
         $_.Name -notmatch '(?i)\.part0*[2-9][0-9]*\.rar$|\.part0*1[0-9]+\.rar$'
     } | Sort-Object @{ Expression = { $_.FullName.Split([char]92).Count } }, @{ Expression = { $_.Length }; Descending = $true })
-    return [pscustomobject]@{ RootFolder = $root.FullName; Runnables = $sorted; Archives = $payloads; AllArchives = $archives.ToArray(); Media = $media.ToArray(); Skipped = $skipped.ToArray() }
+    return [pscustomobject]@{ RootFolder = $root; Runnables = $sorted; Archives = $payloads; AllArchives = @($ScanResult.AllArchives); Media = @($ScanResult.Media); Skipped = @($ScanResult.Skipped); Complete = $ScanResult.Complete; OutputCheck = $ScanResult.OutputCheck }
+}
+
+function Start-FolderScan {
+    param([string]$RootFolder, [string]$ArchivePath, [string]$ListToolPath)
+    Initialize-FolderScanner
+    return New-Object QBitLauncher.FolderScan($RootFolder, $ArchivePath, $ListToolPath)
+}
+
+function Get-FolderInventory {
+    param([string]$RootFolder)
+    $scan = Start-FolderScan $RootFolder
+    try { return ConvertTo-FolderInventory ($scan.Operation.GetAwaiter().GetResult()) }
+    finally { $scan.Dispose() }
 }
 
 function Get-PrimaryContent {

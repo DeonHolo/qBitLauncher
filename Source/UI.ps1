@@ -407,13 +407,70 @@ function Add-UpdatePolling {
 }
 
 function Get-InventoryResponsive {
-    param([string]$Path)
-    return Invoke-ResponsiveTask -Title 'Scanning files — you can cancel this scan' -Action { param($path) Get-FolderInventory $path } -Arguments @($Path) -Functions @('Get-FolderInventory', 'Get-RunnableRank')
+    param([string]$Path, [string]$VerifyArchivePath)
+    Initialize-AppPresentation
+    $listTool = $null
+    if ($VerifyArchivePath) {
+        $listGui = Get-7ZipGuiPath
+        if ($listGui) { $listTool = Join-Path ([IO.Path]::GetDirectoryName($listGui)) '7z.exe' }
+    }
+    $scan = Start-FolderScan -RootFolder $Path -ArchivePath $VerifyArchivePath -ListToolPath $listTool
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    $form = New-Object Windows.Forms.Form
+    $form.Name = 'FolderScanForm'; $form.Text = 'Scanning files'; $form.ClientSize = New-Object Drawing.Size(620, 225)
+    $form.MinimumSize = New-Object Drawing.Size(520, 260); $form.AutoScaleMode = 'Dpi'; $form.StartPosition = 'CenterParent'; $form.MaximizeBox = $false
+    $form.Font = New-Object Drawing.Font('Segoe UI', 10)
+    $layout = New-Object Windows.Forms.TableLayoutPanel; $layout.Dock = 'Fill'; $layout.Padding = New-Object Windows.Forms.Padding(18); $layout.ColumnCount = 1; $layout.RowCount = 4
+    [void]$layout.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent', 100)))
+    foreach ($spec in @(@('Absolute', 34), @('Absolute', 36), @('Percent', 100), @('Absolute', 38))) { [void]$layout.RowStyles.Add((New-Object Windows.Forms.RowStyle($spec[0], $spec[1]))) }
+    $heading = New-Object Windows.Forms.Label; $heading.Text = 'Looking for applications and launch scripts'; $heading.Dock = 'Fill'
+    $status = New-Object Windows.Forms.Label; $status.Name = 'ScanStatus'; $status.Text = 'Starting scan...'; $status.Dock = 'Fill'
+    $location = New-Object Windows.Forms.Label; $location.Name = 'ScanLocation'; $location.Text = $Path; $location.Dock = 'Fill'; $location.Tag = 'Muted'; $location.AutoEllipsis = $true; $location.UseMnemonic = $false
+    $actions = New-Object Windows.Forms.FlowLayoutPanel; $actions.Dock = 'Fill'; $actions.FlowDirection = 'RightToLeft'; $actions.WrapContents = $false
+    $cancel = New-Object Windows.Forms.Button; $cancel.Name = 'CancelScan'; $cancel.Text = 'Cancel'; $cancel.AutoSize = $true; $cancel.MinimumSize = New-Object Drawing.Size(80, 32)
+    $found = New-Object Windows.Forms.Button; $found.Name = 'UseFoundFiles'; $found.Text = 'Use files found'; $found.AutoSize = $true; $found.MinimumSize = New-Object Drawing.Size(130, 32); $found.Enabled = $false
+    $actions.Controls.AddRange(@($cancel, $found)); $form.CancelButton = $cancel
+    $state = @{ Result = $null; Error = $null }
+    $cancel.Add_Click({ $form.Close() }.GetNewClosure())
+    $found.Add_Click({
+        $state.Result = $scan.Snapshot($false); $scan.Cancel(); $form.Close()
+    }.GetNewClosure())
+    $row = 0
+    foreach ($control in @($heading, $status, $location, $actions)) { $layout.Controls.Add($control, 0, $row); $row++ }
+    $form.Controls.Add($layout)
+    $timer = New-Object Windows.Forms.Timer; $timer.Interval = 100
+    $timer.Add_Tick({
+        try {
+            $progress = $scan.Progress
+            if ($progress.Phase) { $heading.Text = $progress.Phase }
+            $status.Text = ('{0:N0} files checked  ·  {1:N0} folders  ·  {2:N0} runnable files found  ·  {3:m\:ss}' -f $progress.Files, $progress.Folders, $progress.Runnables, $watch.Elapsed)
+            $location.Text = $progress.CurrentPath; $found.Enabled = $progress.Runnables -gt 0
+            if ($scan.Operation.IsCompleted) { $state.Result = $scan.Operation.GetAwaiter().GetResult(); $timer.Stop(); $form.Close() }
+        } catch { $state.Error = $_.Exception.GetBaseException(); $timer.Stop(); $form.Close() }
+    }.GetNewClosure())
+    $form.Add_Shown({ Set-FormIcon $form; $timer.Start(); $form.Tag = 'Ready' }.GetNewClosure())
+    Write-LogMessage ('Scan started: ' + [IO.Path]::GetFullPath($Path))
+    try {
+        if ($Global:MainForm -and -not $Global:MainForm.IsDisposed) { [void]$form.ShowDialog($Global:MainForm) } else { [void]$form.ShowDialog() }
+        if ($state.Error) { throw $state.Error }
+        if (-not $state.Result) { throw [OperationCanceledException]::new('Scan cancelled.') }
+        $inventory = ConvertTo-FolderInventory $state.Result
+        if ($inventory.OutputCheck -and -not $inventory.OutputCheck.Valid) {
+            $problemText = ($inventory.OutputCheck.Problems | Select-Object -First 6) -join "`n"
+            throw [IO.IOException]::new("The extractor closed, but its output is incomplete.`n`nDestination: $Path`n`n$problemText`n`nKeep the archive and retry extraction.")
+        }
+        if ($inventory.OutputCheck) { Write-LogMessage ('Checked {0} extracted file sizes in: {1}' -f $inventory.OutputCheck.Checked, $Path) }
+        elseif ($VerifyArchivePath) { Write-LogMessage 'Output file sizes were not verified because the archive list was unavailable or the scan was stopped early.' }
+        Write-LogMessage ('Scan {0}: {1} files, {2} folders, {3} runnables, {4} skipped locations, {5:N2}s; destination: {6}' -f $(if ($inventory.Complete) { 'finished' } else { 'stopped with found files' }), $scan.Progress.Files, $scan.Progress.Folders, $inventory.Runnables.Count, $inventory.Skipped.Count, $watch.Elapsed.TotalSeconds, $Path)
+        return $inventory
+    } catch [OperationCanceledException] { Write-LogMessage ('Scan cancelled after {0:N2}s: {1}' -f $watch.Elapsed.TotalSeconds, $Path); throw }
+    catch { Write-LogMessage ('Scan failed: ' + $_.Exception.Message); throw }
+    finally { $timer.Stop(); $timer.Dispose(); $scan.Dispose(); $watch.Stop(); $form.Dispose() }
 }
 
 function Get-AllRunnables {
-    param([string]$RootFolderPath)
-    $inventory = Get-InventoryResponsive $RootFolderPath
+    param([string]$RootFolderPath, [string]$VerifyArchivePath)
+    $inventory = Get-InventoryResponsive $RootFolderPath -VerifyArchivePath $VerifyArchivePath
     return $inventory.Runnables
 }
 

@@ -23,6 +23,8 @@ qBittorrent sends the finished download to qBitLauncher. Choose an extraction de
 
 Different games can extract at the same time. A large extraction or an open result window does not hold up another game. Opening the same source twice is blocked to prevent duplicate extraction.
 
+Scanning shows the current folder, elapsed time, and counts of checked files and discovered runnables. **Use files found** stops the remaining scan and opens the results already available. **Cancel** closes the scan without waiting for disk I/O. After extraction, qBitLauncher checks expected filenames and sizes when 7-Zip can list the archive, and reports incomplete output with its destination.
+
 ## Find the right file
 
 Search matches shortcut names and original file paths, including non-English characters. Likely applications and installers appear ahead of support tools; **Show helpers** reveals uninstallers, crash handlers, and maintenance tools. This ranking uses filenames and paths, so check the original file before running it.

@@ -10,6 +10,7 @@
 | `Source/Services.ps1` | Settings, Windows DPAPI secrets, remembered state, log rotation, and duplicate-source locks |
 | `Source/Updates.ps1` | Release metadata, background checks, checksum verification, replacement and rollback |
 | `Source/Workflow.ps1` | Cleanup planning/execution, path containment, discovery/ranking, labels, Unicode links, launch handoff, and API repair helpers |
+| `Source/Extraction.ps1` | Metadata-verification entry points for archive manifests and extracted output |
 | `Source/UI.ps1` | Dashboard, selection/settings/cleanup forms, background tasks, and UI timers |
 | `qBitLauncher.ps1` | Generated standalone source; do not maintain independent edits here |
 | `Build.ps1`, `Compile.ps1` | Validation, standalone bundling, staged compilation, backups, and checksums |
@@ -19,9 +20,11 @@
 
 Input can come from qBittorrent's `%F`, `%I`, `%N` completion arguments, Explorer context menus, or the dashboard's recent/manual folder selection. Different games run independently without a queue or shared processing slot. Requests for the same canonical source path share a nonblocking exclusive file handle. Windows releases the handle when its owner exits, including after a crash.
 
-Folder traversal runs in a worker, skips reparse points, and collects runnables and payload archives. Shallow archives are preferred; multipart continuation volumes and common nested asset archives are excluded from payload selection. A runnable folder without a root payload archive can go directly to selection. Ambiguous payloads get a choice dialog.
+Folder traversal runs in a dedicated .NET task, streams directory metadata, skips reparse points, and collects runnables and payload archives. It publishes immutable progress snapshots and completion directly to the UI, avoiding a PowerShell runspace handoff for scans. Cancellation signals the task and returns immediately without waiting for filesystem I/O. A user can explicitly stop and use a snapshot of found files. Shallow archives are preferred; multipart continuation volumes and common nested asset archives are excluded from payload selection. A runnable folder without a root payload archive can go directly to selection. Ambiguous payloads get a choice dialog.
 
 Extraction still uses the installed tool's GUI and progress/cancellation. RAR prefers WinRAR; other formats prefer 7-Zip. After extraction, a cancellable scan finds runnables. The selection form ranks likely applications/installers ahead of maintenance tools, supports name/path search, and exposes helpers through Show helpers/uninstallers. Icons load from a worker into a UI-owned queue and are cached by file identity/mtime.
+
+After an extractor exits or existing output is reused, the same scan task optionally invokes the installed 7-Zip CLI to list expected paths and sizes. Listing is bounded to 15 seconds and cancelled with the scan; validation also checks cancellation between entries. Missing or short output is reported with the actual destination. An unavailable list is recorded as unverified. This checks metadata, not CRCs or the usability of executable content.
 
 Aliases, arguments, administrator mode, recent folders, preferred executable, window size, and column widths are remembered. Labels never change the original file. EXEs launch through Windows shell execution; BAT/CMD targets use an encoded Unicode PowerShell handoff so literal percent characters in their paths survive cmd's parsing.
 

@@ -2,7 +2,7 @@
 param(
     [string]$SourcePath,
     [string]$ResultPath,
-    [ValidateSet('All', 'Selection', 'Cleanup', 'Settings', 'Setup')][string]$Case = 'All'
+    [ValidateSet('All', 'Selection', 'Cleanup', 'Settings', 'Setup', 'Scanning')][string]$Case = 'All'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -307,6 +307,78 @@ try {
             $state.Finished = $true; $form.Close()
         }.GetNewClosure()
         $null = Invoke-UITestCase -Name 'inline shortcut editor' -Action $reopenAction -OnTick $editingTick
+    }
+
+    if ($Case -in @('All', 'Scanning')) {
+        $nativeScanFactory = (Get-Command Start-FolderScan).ScriptBlock
+        function New-UITestScan {
+            $completion = New-Object 'Threading.Tasks.TaskCompletionSource[object]'
+            $stub = [pscustomobject]@{
+                Operation = $completion.Task; Completion = $completion; Cancelled = $false; Disposed = $false
+                Progress = [pscustomobject]@{ Files = 0; Folders = 0; Runnables = 0; Skipped = 0; CurrentPath = $extractedDirectory }
+                Partial = [pscustomobject]@{ RootFolder = $extractedDirectory; Runnables = @((Get-Item -LiteralPath $game)); AllArchives = @(); Media = @(); Skipped = @(); Complete = $false }
+            }
+            $stub | Add-Member -MemberType ScriptMethod -Name Cancel -Value { $this.Cancelled = $true }
+            $stub | Add-Member -MemberType ScriptMethod -Name Dispose -Value { $this.Cancelled = $true; $this.Disposed = $true }
+            $stub | Add-Member -MemberType ScriptMethod -Name Snapshot -Value { param($complete) return $this.Partial }
+            return $stub
+        }
+        Set-Item -Path Function:global:Start-FolderScan -Value { param($RootFolder, $ArchivePath, $ListToolPath) return $Global:UIHarnessState.Scan }
+        try {
+            $Global:UIHarnessState.Scan = New-UITestScan
+            $scanTick = {
+                param($state)
+                $form = Get-UITestForm 'FolderScanForm'
+                if (-not $form -or $form.Tag -ne 'Ready') { return }
+                $form.Opacity = 0
+                if ($state.Step -eq 0) {
+                    Assert-UICheck (-not (Get-UITestControl $form 'UseFoundFiles').Enabled) 'Partial results must be unavailable before a runnable is found.'
+                    $Global:UIHarnessState.Scan.Progress.Files = 12000; $Global:UIHarnessState.Scan.Progress.Folders = 82; $Global:UIHarnessState.Scan.Progress.Runnables = 1
+                    $state.Step = 1; return
+                }
+                if (-not (Get-UITestControl $form 'ScanStatus').Text.Contains('12,000')) { return }
+                Assert-UICheck ((Get-UITestControl $form 'ScanLocation').Text -ceq $extractedDirectory) 'Scan progress must show the actual folder being scanned.'
+                Assert-UICheck ((Get-UITestControl $form 'UseFoundFiles').Enabled -and (Get-UITestControl $form 'CancelScan').Enabled) 'A running scan must allow cancellation and using found files.'
+                $raw = $Global:UIHarnessState.Scan.Partial.PSObject.Copy(); $raw.Complete = $true
+                $Global:UIHarnessState.Scan.Completion.SetResult($raw)
+                $state.Finished = $true
+            }.GetNewClosure()
+            $scanAction = { Get-InventoryResponsive -Path $extractedDirectory }.GetNewClosure()
+            $inventory = Invoke-UITestCase -Name 'scan progress and completion' -Action $scanAction -OnTick $scanTick
+            Assert-UICheck ($inventory.Complete -and $inventory.Runnables.Count -eq 1 -and $Global:UIHarnessState.Scan.Disposed) 'Completed scans must return results and release their worker without waiting again.'
+
+            $Global:UIHarnessState.Scan = New-UITestScan
+            $cancelTick = {
+                param($state)
+                $form = Get-UITestForm 'FolderScanForm'
+                if (-not $form -or $form.Tag -ne 'Ready') { return }
+                $form.Opacity = 0; $state.Finished = $true; (Get-UITestControl $form 'CancelScan').PerformClick()
+            }.GetNewClosure()
+            $cancelAction = { try { Get-InventoryResponsive $extractedDirectory } catch [OperationCanceledException] { return 'cancelled' } }.GetNewClosure()
+            $cancelled = Invoke-UITestCase -Name 'scan cancellation' -Action $cancelAction -OnTick $cancelTick
+            Assert-UICheck ($cancelled -eq 'cancelled' -and $Global:UIHarnessState.Scan.Disposed) 'Cancel must return even while the scan task is still pending.'
+
+            $Global:UIHarnessState.Scan = New-UITestScan; $Global:UIHarnessState.Scan.Progress.Runnables = 1
+            $partialTick = {
+                param($state)
+                $form = Get-UITestForm 'FolderScanForm'
+                if (-not $form -or $form.Tag -ne 'Ready' -or -not (Get-UITestControl $form 'UseFoundFiles').Enabled) { return }
+                $form.Opacity = 0; $state.Finished = $true; (Get-UITestControl $form 'UseFoundFiles').PerformClick()
+            }.GetNewClosure()
+            $partial = Invoke-UITestCase -Name 'use found files' -Action $scanAction -OnTick $partialTick
+            Assert-UICheck (-not $partial.Complete -and $partial.Runnables.Count -eq 1 -and $Global:UIHarnessState.Scan.Cancelled) 'Using found files must explicitly stop the remaining scan and return a marked partial result.'
+
+            $Global:UIHarnessState.Scan = New-UITestScan
+            $errorTick = {
+                param($state)
+                $form = Get-UITestForm 'FolderScanForm'
+                if (-not $form -or $form.Tag -ne 'Ready') { return }
+                $form.Opacity = 0; $Global:UIHarnessState.Scan.Completion.SetException([IO.IOException]::new('scan fixture failed')); $state.Finished = $true
+            }.GetNewClosure()
+            $errorAction = { try { Get-InventoryResponsive $extractedDirectory } catch { return $_.Exception.Message } }.GetNewClosure()
+            $errorText = Invoke-UITestCase -Name 'scan failure' -Action $errorAction -OnTick $errorTick
+            Assert-UICheck ($errorText.Contains('scan fixture failed') -and $Global:UIHarnessState.Scan.Disposed) 'A failed scan must close with an actionable error instead of waiting forever.'
+        } finally { Set-Item -Path Function:global:Start-FolderScan -Value $nativeScanFactory }
     }
 
     if ($Case -in @('All', 'Cleanup')) {

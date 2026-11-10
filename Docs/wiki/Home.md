@@ -9,6 +9,7 @@ qBitLauncher opens downloads and folders, hands archives to 7-Zip or WinRAR, and
 | [Interface style](Interface-Style.md) | Compact Dracula direction, colors, hierarchy, and control behavior |
 | [Upgrade status](Upgrade-Backlog.md) | What was implemented from the audit and remaining limits |
 | [Implementation and validation](2026-11-03-upgrade-implementation.md) | Changes, tests, local build, and publishing status |
+| [Scanning and extraction handoff](2026-11-10-scanning-fix.md) | Large-folder scan changes, extraction output checks, and validation limits |
 | [Troubleshooting](Troubleshooting.md) | Missing files, cleanup scope, shortcuts, credentials, and updates |
 | [Development](../development.md) | Build commands, checks, CI, and releases |
 | [Original repository audit](Repository-Status.md) | Historical snapshot before the upgrades |

@@ -20,6 +20,10 @@ The folder scan prefers useful shallow archive payloads and avoids common nested
 
 For extraction, select the destination, reuse existing files, or choose **Skip Extraction** to scan the original folder. The destination base is remembered. RAR prefers WinRAR; the other supported formats prefer 7-Zip GUI, with the other installed tool available as fallback. The external extractor owns extraction progress and cancellation.
 
+The scan window shows the current folder, elapsed time, files checked, and runnable files found. **Use files found** stops further discovery and opens the available results. **Cancel** returns without waiting for the background task. Scanning reads file metadata rather than large file contents.
+
+An extractor exit code alone is not reported as verified output. When 7-Zip can list the archive, the scan compares expected paths and sizes with the chosen destination. Missing or short files produce an incomplete-output message; keep the source archive. Encrypted headers or a missing listing tool can prevent this check, which the log records. Size checks do not establish file integrity or confirm that an installer will run.
+
 ## Find and launch a runnable
 
 Search matches the saved shortcut label and original full path. Results include separate columns for **Shortcut name**, **Original file**, **Type**, and **Folder**. The type/rank is a filename/path heuristic, not proof that a file is a game or installer. Enable **Show helpers / uninstallers** when a maintenance tool is the intended target.

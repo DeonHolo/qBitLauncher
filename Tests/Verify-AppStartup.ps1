@@ -1,7 +1,8 @@
 # Exercise the actual compiled app against an isolated portable installation.
-param([Parameter(Mandatory = $true)][string]$ExecutablePath, [string]$ScreenshotDirectory, [switch]$Parallel)
+param([Parameter(Mandatory = $true)][string]$ExecutablePath, [string]$ScreenshotDirectory, [switch]$Parallel, [switch]$ExtractArchive)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Drawing
+if ($ExtractArchive) { Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem }
 Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @'
 using System;
 using System.Collections.Generic;
@@ -43,6 +44,17 @@ public static class QBitStartupProbe {
         },IntPtr.Zero);
         return found;
     }
+    public static bool ClickButton(IntPtr parent,string text) {
+        IntPtr found=IntPtr.Zero;
+        EnumChildWindows(parent,delegate(IntPtr handle,IntPtr state) {
+            StringBuilder name=new StringBuilder(256), type=new StringBuilder(256);
+            GetWindowText(handle,name,name.Capacity); GetClassName(handle,type,type.Capacity);
+            if(name.ToString().Replace("&","")==text && type.ToString().IndexOf("BUTTON",StringComparison.OrdinalIgnoreCase)>=0) found=handle;
+            return true;
+        },IntPtr.Zero);
+        if(found==IntPtr.Zero) return false;
+        return PostMessage(found,0x00F5,IntPtr.Zero,IntPtr.Zero);
+    }
     public static int CountItems(IntPtr list) { return SendMessage(list,0x1004,IntPtr.Zero,IntPtr.Zero).ToInt32(); }
 }
 '@
@@ -63,13 +75,26 @@ try {
     [IO.File]::WriteAllText((Join-Path $install 'config.json'), '{"Theme":"Dracula","CheckForUpdates":false}', [Text.Encoding]::UTF8)
     $info = New-Object Diagnostics.ProcessStartInfo; $info.FileName = $app; $info.UseShellExecute = $false; $info.CreateNoWindow = $true
     $info.Arguments = '"' + $fixture + '"'; $info.WorkingDirectory = $install
+    if ($ExtractArchive) {
+        $zip = Join-Path $testRoot 'Extraction fixture.zip'
+        $payload = [IO.Compression.ZipFile]::Open($zip, [IO.Compression.ZipArchiveMode]::Create)
+        try {
+            [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($payload, $target, ($unicode + '.exe'))
+            foreach ($index in 1..500) {
+                $entry = $payload.CreateEntry('assets/' + $index + '.dat'); $stream = $entry.Open()
+                try { $stream.WriteByte(1) } finally { $stream.Dispose() }
+            }
+        } finally { $payload.Dispose() }
+        $info.Arguments = '"' + $zip + '"'
+    }
     $info.EnvironmentVariables['QBITLAUNCHER_SKIP_UPDATE_CHECK'] = '1'; $info.EnvironmentVariables['QBITLAUNCHER_DATA_DIRECTORY'] = Join-Path $testRoot 'appdata'
     $appProcess = [Diagnostics.Process]::Start($info)
-    $deadline = [DateTime]::UtcNow.AddSeconds(25); $window = $null; $list = [IntPtr]::Zero
+    $deadline = [DateTime]::UtcNow.AddSeconds($(if ($ExtractArchive) { 50 } else { 25 })); $window = $null; $list = [IntPtr]::Zero; $extractionStarted = $false
     while ([DateTime]::UtcNow -lt $deadline) {
         $appProcess.Refresh()
         if ($appProcess.HasExited) { throw "Compiled app exited before opening its window (code $($appProcess.ExitCode))." }
         if ($appProcess.MainWindowHandle -ne [IntPtr]::Zero) {
+            if ($ExtractArchive -and -not $extractionStarted) { $extractionStarted = [QBitStartupProbe]::ClickButton($appProcess.MainWindowHandle, 'Extract') }
             $list = [QBitStartupProbe]::FindList($appProcess.MainWindowHandle)
             if ($list -ne [IntPtr]::Zero -and [QBitStartupProbe]::CountItems($list) -eq 1) {
                 $window = [Windows.Automation.AutomationElement]::FromHandle($appProcess.MainWindowHandle)
@@ -85,6 +110,12 @@ try {
         throw "The compiled app did not reach executable selection. Windows: $titles`n$logTail"
     }
     if (-not [QBitStartupProbe]::HasLabel($appProcess.MainWindowHandle, 'Search')) { throw 'The compiled app did not expose the search label.' }
+    if ($ExtractArchive) {
+        $expected = Join-Path $testRoot ('Extraction fixture\' + $unicode + '.exe')
+        if (-not $extractionStarted -or -not [IO.File]::Exists($expected)) { throw 'The compiled extraction workflow did not produce its runnable in the chosen destination.' }
+        $runtimeLog = [IO.File]::ReadAllText((Join-Path $testRoot 'appdata\logs\qBitLauncher.log'))
+        if (-not $runtimeLog.Contains('Scan finished:') -or -not $runtimeLog.Contains('Checked 501 extracted file sizes')) { throw 'The compiled extraction workflow did not verify output and complete scanning.' }
+    }
     if ($Parallel) {
         $smaller = Join-Path $testRoot ('Smaller game ' + $unicode); [IO.Directory]::CreateDirectory($smaller) | Out-Null
         [IO.File]::Copy((Join-Path $env:WINDIR 'System32\whoami.exe'), (Join-Path $smaller 'Smaller.exe'))
@@ -113,7 +144,7 @@ try {
     if (-not $appProcess.WaitForExit(8000)) { throw 'The compiled app did not close cleanly.' }
     if ($appProcess.ExitCode -ne 0) { throw "The compiled app exited with code $($appProcess.ExitCode)." }
     if (-not [IO.File]::Exists($target)) { throw 'Startup or closing changed the original fixture target.' }
-    [pscustomobject]@{ Passed = $true; Suite = 'Compiled app startup'; Checks = $(if ($Parallel) { 8 } else { 5 }); UnicodeInstall = $true; NestedAssetArchiveSkipped = $true; IndependentGames = [bool]$Parallel }
+    [pscustomobject]@{ Passed = $true; Suite = 'Compiled app startup'; Checks = $(if ($Parallel) { 8 } else { 5 }) + $(if ($ExtractArchive) { 2 } else { 0 }); UnicodeInstall = $true; NestedAssetArchiveSkipped = -not $ExtractArchive; IndependentGames = [bool]$Parallel; ExtractionToSelection = [bool]$ExtractArchive }
 }
 finally {
     if ($appProcess) { if (-not $appProcess.HasExited) { $appProcess.Kill(); $appProcess.WaitForExit() }; $appProcess.Dispose() }

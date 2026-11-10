@@ -30,7 +30,7 @@ function Get-BundledApplicationSource {
         throw 'Source/App.ps1 must contain exactly one # <BUNDLED_FUNCTIONS> marker.'
     }
     $parts = New-Object 'System.Collections.Generic.List[string]'
-    foreach ($fileName in @('Services.ps1', 'Updates.ps1', 'Workflow.ps1', 'UI.ps1')) {
+    foreach ($fileName in @('Services.ps1', 'Updates.ps1', 'Workflow.ps1', 'Extraction.ps1', 'UI.ps1')) {
         $path = Join-Path $sourceRoot $fileName
         $text = [IO.File]::ReadAllText($path).Replace("`r`n", "`n")
         $ast = Assert-BuildScriptSyntax -Text $text -Name $fileName

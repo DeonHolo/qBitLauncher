@@ -8,8 +8,9 @@ Edit `Source/App.ps1` for startup, integration, installer, and main routing; the
 
 1. `Source/Services.ps1`: settings, DPAPI, logging, remembered state, and duplicate-source locks. Settings saves merge each window's changes with the latest disk state.
 2. `Source/Updates.ps1`: release metadata, background checks, checksums, and replacement/restart handoff.
-3. `Source/Workflow.ps1`: cleanup planning, path checks, archive/runnable discovery, labels, shortcuts, and repair helpers.
-4. `Source/UI.ps1`: Windows Forms and responsive worker orchestration.
+3. `Source/Workflow.ps1`: cleanup planning, path checks, the native directory-scanning task, archive/runnable discovery, labels, shortcuts, and repair helpers.
+4. `Source/Extraction.ps1`: metadata-verification entry points for expected extracted paths and sizes.
+5. `Source/UI.ps1`: Windows Forms and responsive worker orchestration. File scans poll a native task directly; other background work uses PowerShell runspaces.
 
 `Build.ps1` inserts these definition files, in that order, at `# <BUNDLED_FUNCTIONS>` in the app template. The root `qBitLauncher.ps1` is generated output and is checked in for standalone source users. Do not maintain changes only in that generated file: the next build regenerates it.
 
@@ -50,6 +51,8 @@ The scripts use assertions directly; Pester is not required.
 | `Tests/Test-Build.ps1` | Bundling, syntax/marker checks, UTF-8 output, version metadata constraints, atomic publication and hashes |
 | `Tests/Test-UI.ps1` | Controlled WinForms interactions for selection, cleanup choices, settings, and setup |
 | `Tests/Test-Launch.ps1` | Actual disposable BAT/CMD launches with special-character paths, saved arguments, and native EXE start-info validation |
+| `Tests/Test-Scanning.ps1` | Streaming discovery across 12,005 files, a locked sparse 12 GB payload, completion, cancellation, junction cycles, missing roots, and found-file snapshots |
+| `Tests/Test-Extraction.ps1` | Missing/short output, incorrect destinations, expected file sizes, archive-list timeouts, asynchronous verification, and cancellation during listing |
 
 Run a focused check after generating the current standalone script:
 
@@ -60,6 +63,8 @@ powershell.exe -NoProfile -File .\Tests\Test-Workflow.ps1 -SourcePath .\qBitLaun
 Tests import definitions rather than app startup, isolate state in temporary directories, and do not operate on the user's real downloads. UI checks use controlled forms and fixture content. Actual torrent completion, real release installation, and physical multi-display scaling are separate runtime checks; the [implementation report](wiki/2026-11-03-upgrade-implementation.md) records their limits.
 
 After compilation, verify real app startup using `powershell.exe -NoProfile -File .\Tests\Verify-AppStartup.ps1 -ExecutablePath .\qBitLauncher.exe -Parallel`. It opens an isolated portable copy with updates disabled, checks that a Unicode runnable folder containing an unrelated nested archive reaches the selection UI, then opens a second game while the first result window stays open. Both close without launching targets or changing integrations.
+
+Add `-ExtractArchive` to exercise an actual 7-Zip extraction of a disposable archive, then verify that expected output checks and scanning reach executable selection. This optional check needs an installed 7-Zip GUI and CLI. It never extracts a personal archive or launches fixture executables.
 
 ## CI and releases
 

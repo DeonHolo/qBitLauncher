@@ -33,6 +33,12 @@ Root/shallow payload archives take precedence over deep asset archives. If multi
 
 The current local version has no queue. Separate games extract independently, even while another result window stays open. An **Already open** message applies only to the same source path. If an old window still says **Download queued**, that window belongs to the earlier executable; reopen that source with the rebuilt local application.
 
+## A scan appears stuck after extraction
+
+The updated scan displays checked files, found runnables, the current folder, and elapsed time. Use **Use files found** to stop the remaining scan and open available results, or **Cancel** to leave it. Scan completion, cancellation, counts, skipped locations, and the destination are written to the log.
+
+Check the destination shown by qBitLauncher: it may differ from extracting beside the source archive in Explorer. If output validation reports missing or short files, keep the original archive and retry extraction into that destination. The extractor's exit code alone does not establish complete output. When archive metadata cannot be listed, the log explicitly says that file sizes were not verified.
+
 ## Launch arguments or administrator mode
 
 Arguments and admin mode are remembered per file. New files initially request elevation; Settings changes that default. Cancelling UAC offers a non-admin retry. BAT/CMD launches use a Unicode helper and preserve literal percent characters in target paths. Programs may impose their own filename, permission, or argument requirements.

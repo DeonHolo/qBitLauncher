@@ -1337,7 +1337,7 @@ function Expand-ArchiveFile {
                 if ($exitCode -eq 1) {
                     Write-LogMessage "$($extractor.Name) completed with warnings. Continuing to executable discovery."
                 }
-                Write-LogMessage "Extracted with $($extractor.Name) GUI successfully."
+                Write-LogMessage "The $($extractor.Name) process exited. Checking output in: $DestinationPath"
                 return $DestinationPath
             }
 
@@ -2041,9 +2041,9 @@ try {
             if (-not $destination) { return }
             $rootFolder = $destination
             $Global:UserSettings.LastExtractionPath = [IO.Path]::GetDirectoryName($destination.TrimEnd([char]92)); [void](Save-UserSettings)
-            $runnables = @(Get-AllRunnables $rootFolder)
+            $runnables = @(Get-AllRunnables $rootFolder -VerifyArchivePath $archive.FullName)
         } elseif ($extraction.UseExisting) {
-            $rootFolder = $extraction.DestinationPath; $runnables = @(Get-AllRunnables $rootFolder)
+            $rootFolder = $extraction.DestinationPath; $runnables = @(Get-AllRunnables $rootFolder -VerifyArchivePath $archive.FullName)
         } elseif ($extraction.SkippedExtraction) {
             $runnables = if ($inventory) { @($inventory.Runnables) } else { @(Get-AllRunnables $rootFolder) }
         } else { return }
