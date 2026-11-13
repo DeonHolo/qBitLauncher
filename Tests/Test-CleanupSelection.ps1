@@ -77,6 +77,30 @@ try {
     Assert-CleanupSelection ($script:apiBody.deleteFiles -ceq 'false' -and $script:apiBody.hashes -eq ('b' * 40)) 'Entry-only API calls must explicitly keep downloaded files.'
     Remove-QBittorrentTorrent -TorrentHash ('b' * 40) -DeleteFiles $true
     Assert-CleanupSelection ($script:apiBody.deleteFiles -ceq 'true') 'The API wrapper must serialize an explicit deletion flag correctly.'
+
+    # Select all can toggle permanent deletion while its preview worker is still
+    # running. Exercise the actual preview closures without displaying a form.
+    $uiAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '..\Source\UI.ps1'), [ref]$tokens, [ref]$errors)
+    $cleanupDefinition = $uiAst.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Show-CleanupConfirmForm' }, $false)
+    $state = @{ Task = [object]::new(); Plan = $null; Error = $false; NeedsAck = $false }
+    $source = [pscustomobject]@{ Checked = $true }; $extracted = [pscustomobject]@{ Checked = $true }; $torrent = [pscustomobject]@{ Checked = $true }
+    $ack = [pscustomobject]@{ Checked = $true; Visible = $false }
+    $permanent = [pscustomobject]@{ Checked = $true; Enabled = $false }
+    $preview = [pscustomobject]@{ Text = 'Checking selected locations...' }; $confirm = [pscustomobject]@{ Enabled = $true }
+    $layout = [pscustomobject]@{ RowStyles = @(@{ Height = 0 }, @{ Height = 0 }, @{ Height = 0 }, @{ Height = 0 }) }
+    foreach ($name in @('updateConfirm', 'renderPreview')) {
+        $assignment = $cleanupDefinition.Find({ param($node) $node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left -is [Management.Automation.Language.VariableExpressionAst] -and $node.Left.VariablePath.UserPath -eq $name }, $true)
+        if (-not $assignment) { throw "Missing cleanup preview callback: $name" }
+        Invoke-Expression $assignment.Extent.Text
+    }
+    & $renderPreview
+    Assert-CleanupSelection ($preview.Text -ceq 'Checking selected locations...' -and -not $confirm.Enabled) 'Permanent deletion changes must keep the preview pending until its worker finishes.'
+    Assert-CleanupSelection ($ack.Checked -and $permanent.Checked) 'Waiting for the preview must retain explicit Select all choices.'
+    $state.Task = $null; $state.NeedsAck = $true
+    $state.Plan = @{ Targets = @(@{ CanonicalPath = 'fixture'; Path = 'fixture' }); ApprovedRoots = @(); Retained = @(); Mode = 'Everything' }
+    & $renderPreview
+    Assert-CleanupSelection ($preview.Text -match 'Permanently delete source and extracted files' -and $preview.Text -match 'entry from qBittorrent') 'A completed combined preview must show the selected removal method and scope.'
+    Assert-CleanupSelection ($source.Checked -and $extracted.Checked -and $torrent.Checked -and $ack.Checked -and $permanent.Checked -and $confirm.Enabled) 'All five choices must remain selected and become usable only after the preview completes.'
     $result = @{ Passed = $true; Checks = $script:checks; PowerShellVersion = $PSVersionTable.PSVersion.ToString(); Suite = 'CleanupSelection' }
     if ($ResultPath) { [IO.File]::WriteAllText($ResultPath, ($result | ConvertTo-Json)) } else { [pscustomobject]$result }
 }

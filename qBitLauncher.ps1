@@ -1846,6 +1846,10 @@ function Show-CleanupConfirmForm {
     $state = @{ Plan = $null; Task = $null; NeedsAck = $false; Error = $false; Result = $null; SelectingAll = $false; ApplyAll = $false }
     $updateConfirm = { $confirm.Enabled = -not $state.Task -and -not $state.Error -and (-not $state.NeedsAck -or $ack.Checked) -and ($torrent.Checked -or ($state.Plan -and $state.Plan.Targets.Count -gt 0)) }.GetNewClosure()
     $renderPreview = {
+        if ($state.Task) {
+            $preview.Text = 'Checking selected locations...'; $confirm.Enabled = $false
+            return
+        }
         $lines = New-Object 'System.Collections.Generic.List[string]'
         if ($state.Plan -and $state.Plan.Targets.Count) {
             $verb = if ($permanent.Checked) { 'Permanently delete' } else { 'Recycle' }
