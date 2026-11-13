@@ -69,7 +69,7 @@ try {
     $apiDefinition = $appAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Remove-QBittorrentTorrent' }, $false)[0]
     Invoke-Expression $apiDefinition.Extent.Text
     function Invoke-WebRequest {
-        param($Uri, $Method, $Body, $ContentType, $WebSession, [switch]$UseBasicParsing, $TimeoutSec, $ErrorAction)
+        param($Uri, $Method, $Body, $ContentType, $WebSession, $Headers, [switch]$UseBasicParsing, $TimeoutSec, $ErrorAction)
         $script:apiBody = $Body
     }
     $Global:UserSettings = @{ QbittorrentWebUrl = 'http://127.0.0.1:8080'; QbittorrentUsername = '' }

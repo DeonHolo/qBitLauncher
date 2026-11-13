@@ -1146,9 +1146,12 @@ function Get-PrimaryContent {
 function Get-QBittorrentRepairLines {
     param([string[]]$Lines, [int]$Port = 8080)
     if ($Port -lt 1 -or $Port -gt 65535) { throw 'API port must be between 1 and 65535.' }
-    $result = Set-QBittorrentIniValue -Lines $Lines -Key 'WebUI\Enabled' -Value 'true'
-    $result = Set-QBittorrentIniValue -Lines $result -Key 'WebUI\Port' -Value ([string]$Port)
-    $result = Set-QBittorrentIniValue -Lines $result -Key 'WebUI\Address' -Value '127.0.0.1'
+    $modern = @($Lines | Where-Object { $_ -match '^\[WebUI\]\s*$' }).Count -gt 0
+    $section = if ($modern) { 'WebUI' } else { 'Preferences' }
+    $prefix = if ($modern) { '' } else { 'WebUI\' }
+    $result = Set-QBittorrentIniValue -Lines $Lines -Section $section -Key ($prefix + 'Enabled') -Value 'true'
+    $result = Set-QBittorrentIniValue -Lines $result -Section $section -Key ($prefix + 'Port') -Value ([string]$Port)
+    $result = Set-QBittorrentIniValue -Lines $result -Section $section -Key ($prefix + 'Address') -Value '127.0.0.1'
     # Preserve every authentication, password, HTTPS, and host-validation setting.
     return ,$result
 }
@@ -2782,41 +2785,49 @@ function Remove-QBittorrentTorrent {
 
     $baseUrl = $baseUrl.Trim().TrimEnd('/')
     $parsedUrl = $null
-    if (-not [System.Uri]::TryCreate($baseUrl, [System.UriKind]::Absolute, [ref]$parsedUrl)) {
+    if (-not [System.Uri]::TryCreate($baseUrl, [System.UriKind]::Absolute, [ref]$parsedUrl) -or $parsedUrl.Scheme -notin @('http', 'https')) {
         throw "qBittorrent local API URL is invalid: $baseUrl"
     }
 
     $session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
-
-    if (-not [string]::IsNullOrWhiteSpace($Global:UserSettings.QbittorrentUsername)) {
-        $loginUri = "$baseUrl/api/v2/auth/login"
-        $loginBody = @{
-            username = $Global:UserSettings.QbittorrentUsername
-            password = $Global:UserSettings.QbittorrentPassword
-        }
-
-        $loginResponse = Invoke-WebRequest -Uri $loginUri -Method Post -Body $loginBody -ContentType 'application/x-www-form-urlencoded' -WebSession $session -UseBasicParsing -TimeoutSec 8 -ErrorAction Stop
-        if ($loginResponse.Content -notmatch '^Ok\.?$') {
-            throw "qBittorrent login failed. Check the local API username and password in Settings."
-        }
-    }
-
-    $deleteUri = "$baseUrl/api/v2/torrents/delete"
-    $deleteBody = @{
-        hashes = $TorrentHash.Trim()
-        deleteFiles = $DeleteFiles.ToString().ToLowerInvariant()
-    }
+    $headers = @{ Origin = $parsedUrl.GetLeftPart([UriPartial]::Authority); Referer = $baseUrl + '/' }
 
     try {
-        Invoke-WebRequest -Uri $deleteUri -Method Post -Body $deleteBody -ContentType 'application/x-www-form-urlencoded' -WebSession $session -UseBasicParsing -TimeoutSec 8 -ErrorAction Stop | Out-Null
+        if (-not [string]::IsNullOrWhiteSpace($Global:UserSettings.QbittorrentUsername)) {
+            $loginUri = "$baseUrl/api/v2/auth/login"
+            $loginBody = @{
+                username = $Global:UserSettings.QbittorrentUsername
+                password = $Global:UserSettings.QbittorrentPassword
+            }
+
+            $loginResponse = Invoke-WebRequest -Uri $loginUri -Method Post -Body $loginBody -ContentType 'application/x-www-form-urlencoded' -WebSession $session -Headers $headers -UseBasicParsing -TimeoutSec 8 -ErrorAction Stop
+            if (([string]$loginResponse.Content).Trim() -notmatch '^Ok\.?$') {
+                throw "qBittorrent login failed. Check the local API username and password in Settings."
+            }
+        }
+
+        $deleteUri = "$baseUrl/api/v2/torrents/delete"
+        $deleteBody = @{
+            hashes = $TorrentHash.Trim()
+            deleteFiles = $DeleteFiles.ToString().ToLowerInvariant()
+        }
+
+        Invoke-WebRequest -Uri $deleteUri -Method Post -Body $deleteBody -ContentType 'application/x-www-form-urlencoded' -WebSession $session -Headers $headers -UseBasicParsing -TimeoutSec 8 -ErrorAction Stop | Out-Null
     }
     catch {
         $message = $_.Exception.Message
-        if ($message -match 'Unable to connect|actively refused|timed out|No connection could be made|remote server') {
-            throw "Could not connect to qBittorrent's local API at $baseUrl."
+        $failure = $_.Exception
+        $status = $null
+        while ($failure) {
+            if ($failure.Response -and $failure.Response.StatusCode) { $status = [int]$failure.Response.StatusCode; break }
+            $failure = $failure.InnerException
         }
-        if ($message -match 'Unauthorized|Forbidden|401|403') {
+        if ($status -in @(401, 403) -or $message -match 'Unauthorized|Forbidden|\b401\b|\b403\b') {
             throw "qBittorrent rejected the request. Enter the local API username/password in qBitLauncher Settings."
+        }
+        if ($status) { throw "qBittorrent's API returned HTTP $status at $baseUrl. Check the API URL and qBittorrent Web UI settings." }
+        if ($message -match 'Unable to connect|actively refused|timed out|No connection could be made|name could not be resolved') {
+            throw "Could not connect to qBittorrent's local API at $baseUrl."
         }
         throw
     }
@@ -2866,11 +2877,15 @@ function Get-QBittorrentConfigPath {
 function Get-QBittorrentWebApiState {
     $configPath = Get-QBittorrentConfigPath
     $state = [pscustomobject]@{
-        ConfigPath  = $configPath
-        Exists      = $false
-        Enabled     = $null
-        Port        = $null
+        ConfigPath = $configPath
+        Exists = $false
+        Enabled = $null
+        Port = $null
         CloseToTray = $null
+        ConfigurationSection = 'Preferences'
+        Address = $null
+        HasPassword = $false
+        Username = 'admin'
     }
 
     if ([string]::IsNullOrWhiteSpace($configPath) -or -not (Test-Path -LiteralPath $configPath)) {
@@ -2880,15 +2895,20 @@ function Get-QBittorrentWebApiState {
     $state.Exists = $true
     try {
         $lines = Get-Content -LiteralPath $configPath -ErrorAction Stop
+        if (@($lines | Where-Object { $_ -match '^\[WebUI\]\s*$' }).Count) { $state.ConfigurationSection = 'WebUI' }
+        $section = ''
+        $prefix = if ($state.ConfigurationSection -eq 'WebUI') { '' } else { 'WebUI\' }
         foreach ($line in $lines) {
-            if ($line -match '^WebUI\\Enabled=(.+)$') {
-                $state.Enabled = ($Matches[1].Trim().ToLowerInvariant() -eq 'true')
-            }
-            elseif ($line -match '^WebUI\\Port=(\d+)$') {
-                $state.Port = [int]$Matches[1]
-            }
-            elseif ($line -match '^General\\CloseToTray=(.+)$') {
-                $state.CloseToTray = ($Matches[1].Trim().ToLowerInvariant() -eq 'true')
+            if ($line -match '^\[(.+)\]\s*$') { $section = $Matches[1]; continue }
+            if ($section -eq 'Preferences' -and $line -match '^General\\CloseToTray=(.+)$') { $state.CloseToTray = ($Matches[1].Trim() -eq 'true') }
+            if ($section -ne $state.ConfigurationSection -or $line -notmatch '^([^=]+)=(.*)$') { continue }
+            $key = $Matches[1]; $value = $Matches[2].Trim()
+            if ($key -eq ($prefix + 'Enabled')) { $state.Enabled = $value -eq 'true' }
+            elseif ($key -eq ($prefix + 'Port') -and $value -match '^\d+$') { $state.Port = [int]$value }
+            elseif ($key -eq ($prefix + 'Address')) { $state.Address = $value }
+            elseif ($key -eq ($prefix + 'Username')) { $state.Username = $value }
+            elseif ($key -eq ($prefix + 'Password_PBKDF2') -or ($state.ConfigurationSection -eq 'Preferences' -and $key -eq ($prefix + 'Password_ha1'))) {
+                if ($value -notin @('', '@ByteArray()')) { $state.HasPassword = $true }
             }
         }
     }
@@ -2903,25 +2923,28 @@ function Set-QBittorrentIniValue {
     param(
         [string[]]$Lines,
         [string]$Key,
-        [string]$Value
+        [string]$Value,
+        [string]$Section = 'Preferences'
     )
 
     $list = New-Object System.Collections.Generic.List[string]
-    $pattern = '^' + [regex]::Escape($Key) + '='
+    $pattern = '^\s*' + [regex]::Escape($Key) + '\s*='
+    $currentSection = ''; $sectionIndex = -1
 
     foreach ($line in $Lines) {
-        if ($line -notmatch $pattern) {
-            $list.Add($line)
+        if ($line -match '^\[(.+)\]\s*$') {
+            $currentSection = $Matches[1]
+            if ($currentSection -eq $Section -and $sectionIndex -lt 0) { $sectionIndex = $list.Count }
         }
+        if ($currentSection -eq $Section -and $line -match $pattern) { continue }
+        $list.Add($line)
     }
 
-    $resultArray = $list.ToArray()
-    $prefIndex = [array]::IndexOf($resultArray, '[Preferences]')
-    if ($prefIndex -ge 0) {
-        $list.Insert($prefIndex + 1, "$Key=$Value")
+    if ($sectionIndex -ge 0) {
+        $list.Insert($sectionIndex + 1, "$Key=$Value")
     }
     else {
-        $list.Add('[Preferences]')
+        $list.Add("[$Section]")
         $list.Add("$Key=$Value")
     }
 
@@ -2995,21 +3018,7 @@ function Stop-QBittorrentGracefully {
         }
     } while ((Get-Date) -lt $deadline)
 
-    # Graceful close failed (elevated process or CloseToTray). Try elevated taskkill.
-    Write-LogMessage "Graceful close timed out. Attempting elevated taskkill."
-    try {
-        $killProc = Start-Process -FilePath "taskkill" -ArgumentList "/F /IM qbittorrent.exe" -Verb RunAs -Wait -PassThru -WindowStyle Hidden
-        Start-Sleep -Seconds 2
-        $remaining = @(Get-Process -Name qbittorrent -ErrorAction SilentlyContinue)
-        if ($remaining.Count -eq 0) {
-            Write-LogMessage "Elevated taskkill succeeded."
-            return @{ Closed = $true; WasRunning = $true }
-        }
-    }
-    catch {
-        Write-LogMessage "Elevated taskkill failed: $($_.Exception.Message)"
-    }
-
+    Write-LogMessage 'qBittorrent is still running. Waiting for the user to exit it before editing its config.'
     return @{ Closed = $false; WasRunning = $true }
 }
 
@@ -3166,7 +3175,8 @@ function Wait-QBittorrentApiEndpoint {
 
 function Test-QBittorrentConnectionFailureMessage {
     param([string]$Message)
-    return ($Message -match 'Could not connect|Unable to connect|actively refused|timed out|No connection could be made|remote server')
+    if ($Message -match 'HTTP\s+\d{3}|\b401\b|\b403\b|Unauthorized|Forbidden|rejected|login failed|credentials') { return $false }
+    return ($Message -match 'Could not connect|Unable to connect|actively refused|timed out|No connection could be made|name could not be resolved')
 }
 
 function Invoke-QBittorrentLocalApiRepairFlow {
@@ -3187,10 +3197,13 @@ function Invoke-QBittorrentLocalApiRepairFlow {
     if (-not $state.Exists) {
         return @{ Status = "NotApplicable"; Message = "Could not find qBittorrent.ini at $($state.ConfigPath). Start qBittorrent once, then try again." }
     }
+    if ($state.ConfigurationSection -eq 'WebUI' -and (-not $state.HasPassword -or [string]::IsNullOrWhiteSpace($state.Username))) {
+        return @{ Status = 'CredentialsRequired'; Message = "qBittorrent's Web UI needs a username and password before it can start.`n`nIn qBittorrent, open Tools → Options → Web UI. Set the username and password under Authentication, then click Apply.`n`nEnter the same credentials in qBitLauncher → More → Settings, then retry cleanup." }
+    }
 
     # If the WebUI is enabled in the config but the API is not responding,
     # try to start qBittorrent automatically and wait for the API to come up.
-    if ($state.Enabled -eq $true -and -not (Test-QBittorrentApiEndpointAvailable)) {
+    if ($state.Enabled -eq $true -and -not (Test-QBittorrentProcessRunning) -and -not (Test-QBittorrentApiEndpointAvailable)) {
         Write-LogMessage "qBittorrent WebUI is enabled in config but API not responding. Attempting to start qBittorrent process."
         $exePath = Get-QBittorrentExecutablePath
         if ($exePath) {
@@ -3216,7 +3229,9 @@ function Invoke-QBittorrentLocalApiRepairFlow {
     }
 
     $port = Get-QBittorrentApiPort
-    $enableResult = Show-ThemedMessageBox -Message "qBittorrent's local API is unavailable.`n`nApply these changes to qBittorrent.ini?`nWebUI\Enabled=true`nWebUI\Port=$port`nWebUI\Address=127.0.0.1`n`nExisting username, password, HTTPS, and authentication settings will be preserved. A backup is kept before editing.`n`nApply and retry removal?" -Title "Set Up qBittorrent Cleanup" -Buttons 'YesNo' -Icon 'Question'
+    $section = $state.ConfigurationSection
+    $prefix = if ($section -eq 'WebUI') { '' } else { 'WebUI\' }
+    $enableResult = Show-ThemedMessageBox -Message "qBittorrent's local API is unavailable.`n`nApply these changes in [$section] in qBittorrent.ini?`n${prefix}Enabled=true`n${prefix}Port=$port`n${prefix}Address=127.0.0.1`n`nExisting username, password, HTTPS, and authentication settings will be preserved. A backup is kept before editing.`n`nApply and retry removal?" -Title "Set Up qBittorrent Cleanup" -Buttons 'YesNo' -Icon 'Question'
     if ($enableResult -ne [System.Windows.Forms.DialogResult]::Yes) {
         return @{ Status = "Declined"; Message = "qBittorrent local API setup was cancelled." }
     }

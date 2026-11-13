@@ -45,7 +45,11 @@ Arguments and admin mode are remembered per file. New files initially request el
 
 ## qBittorrent API cannot connect or authenticate
 
-Check Settings for the URL and existing qBittorrent account. Repair shows its changes, creates a backup, enables the API and loopback binding, and preserves credentials/authentication/HTTPS. If HTTPS is enabled in qBittorrent, the URL must match it. A 401/403 response requires the correct existing credentials; repair does not reset them.
+Open More → Settings and check the API URL and qBittorrent credentials. If HTTPS is enabled in qBittorrent, the URL must use HTTPS too. A 401/403 response requires the correct credentials.
+
+If qBittorrent shows **“WebUI configuration failed. Reason: Credentials are not set”**, open Tools → Options → Web UI. Under Authentication, set a username and use Change the current password to set a password, then click Apply. Enter the same username and password in qBitLauncher → More → Settings and retry cleanup.
+
+Repair previews its changes, creates a backup, and enables the API on the loopback address while preserving credentials, authentication rules, and HTTPS. If it asks you to exit qBittorrent, use File → Exit or the tray menu so it can save the settings safely.
 
 Passwords in config are encrypted for the Windows user. After moving a portable config to another account, re-enter the password. Failed decryption retains the previous ciphertext until replacement.
 

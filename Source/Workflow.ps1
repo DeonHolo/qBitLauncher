@@ -467,9 +467,12 @@ function Get-PrimaryContent {
 function Get-QBittorrentRepairLines {
     param([string[]]$Lines, [int]$Port = 8080)
     if ($Port -lt 1 -or $Port -gt 65535) { throw 'API port must be between 1 and 65535.' }
-    $result = Set-QBittorrentIniValue -Lines $Lines -Key 'WebUI\Enabled' -Value 'true'
-    $result = Set-QBittorrentIniValue -Lines $result -Key 'WebUI\Port' -Value ([string]$Port)
-    $result = Set-QBittorrentIniValue -Lines $result -Key 'WebUI\Address' -Value '127.0.0.1'
+    $modern = @($Lines | Where-Object { $_ -match '^\[WebUI\]\s*$' }).Count -gt 0
+    $section = if ($modern) { 'WebUI' } else { 'Preferences' }
+    $prefix = if ($modern) { '' } else { 'WebUI\' }
+    $result = Set-QBittorrentIniValue -Lines $Lines -Section $section -Key ($prefix + 'Enabled') -Value 'true'
+    $result = Set-QBittorrentIniValue -Lines $result -Section $section -Key ($prefix + 'Port') -Value ([string]$Port)
+    $result = Set-QBittorrentIniValue -Lines $result -Section $section -Key ($prefix + 'Address') -Value '127.0.0.1'
     # Preserve every authentication, password, HTTPS, and host-validation setting.
     return ,$result
 }
