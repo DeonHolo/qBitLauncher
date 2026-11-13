@@ -420,7 +420,12 @@ try {
                 $ack.Checked = $false
                 Assert-UICheck (-not $confirm.Enabled) 'Removing acknowledgement must disable app deletion again.'
                 Assert-UICheck ($permanent.Enabled -and -not $permanent.Checked) 'Combined cleanup must default to the Recycle Bin.'
-                $ack.Checked = $true
+                (Get-UITestControl $form 'SelectAllCleanup').PerformClick()
+                $state.Step = 3
+                return
+            }
+            if ($state.Step -eq 3) {
+                Assert-UICheck ($source.Checked -and $extracted.Checked -and $torrent.Checked -and $ack.Checked -and $permanent.Checked -and $confirm.Enabled) 'Select all must retain all five choices after the asynchronous preview completes.'
                 $state.Finished = $true
                 $confirm.PerformClick()
             }

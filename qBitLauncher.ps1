@@ -1827,7 +1827,7 @@ function Show-CleanupConfirmForm {
     $confirm = New-Object Windows.Forms.Button; $confirm.Name = 'ConfirmCleanup'; $confirm.Text = 'Remove selected'; $confirm.AutoSize = $true; $confirm.MinimumSize = New-Object Drawing.Size(130, 34); $confirm.Enabled = $false; Set-DestructiveButton $confirm
     $cancel = New-Object Windows.Forms.Button; $cancel.Text = 'Cancel'; $cancel.AutoSize = $true; $cancel.MinimumSize = New-Object Drawing.Size(80, 34); Set-ThemedButton $cancel
     $actions.Controls.AddRange(@($confirm, $cancel))
-    $state = @{ Plan = $null; Task = $null; NeedsAck = $false; Error = $false; Result = $null }
+    $state = @{ Plan = $null; Task = $null; NeedsAck = $false; Error = $false; Result = $null; SelectingAll = $false; ApplyAll = $false }
     $updateConfirm = { $confirm.Enabled = -not $state.Task -and -not $state.Error -and (-not $state.NeedsAck -or $ack.Checked) -and ($torrent.Checked -or ($state.Plan -and $state.Plan.Targets.Count -gt 0)) }.GetNewClosure()
     $renderPreview = {
         $lines = New-Object 'System.Collections.Generic.List[string]'
@@ -1854,6 +1854,8 @@ function Show-CleanupConfirmForm {
     }.GetNewClosure()
     $functions = @('Get-CleanupPlan', 'Get-CanonicalPath', 'Test-PathContains', 'Test-CleanupRoot', 'Test-TreeHasReparsePoint')
     $selectionChanged = {
+        if ($state.SelectingAll) { return }
+        $state.ApplyAll = $false
         Stop-AppWorker $state.Task; $state.Task = $null; $state.Plan = $null; $state.Error = $false; $state.NeedsAck = $false; $ack.Checked = $false
         if (-not $source.Checked -and -not $extracted.Checked) { & $renderPreview; return }
         $mode = if ($source.Checked -and $extracted.Checked) { 'Everything' } elseif ($source.Checked) { 'SourceOnly' } else { 'ExtractedOnly' }
@@ -1870,6 +1872,7 @@ function Show-CleanupConfirmForm {
                 if ($result.Error) { $preview.Text = $result.Error; & $updateConfirm }
                 else {
                     $state.Plan = $result.Values[0]; $state.NeedsAck = $state.Plan.RequiresAcknowledgement
+                    if ($state.ApplyAll) { $ack.Checked = $true; $permanent.Checked = $true; $state.ApplyAll = $false }
                     & $renderPreview
                 }
             }
@@ -1877,6 +1880,17 @@ function Show-CleanupConfirmForm {
     }.GetNewClosure())
     $ack.Add_CheckedChanged($updateConfirm)
     $permanent.Add_CheckedChanged($renderPreview)
+    $selectAll = New-Object Windows.Forms.Button; $selectAll.Name = 'SelectAllCleanup'; $selectAll.Text = 'Select all (permanent)'; $selectAll.Dock = 'Right'; $selectAll.Width = 190
+    $tip.SetToolTip($selectAll, 'Select available source files, extracted files, torrent entry, app removal acknowledgement, and permanent deletion.')
+    $selectAll.Add_Click({
+        $state.SelectingAll = $true
+        try {
+            foreach ($control in @($source, $extracted, $torrent)) { $control.Checked = $control.Enabled }
+        } finally { $state.SelectingAll = $false }
+        & $selectionChanged
+        $state.ApplyAll = [bool]$state.Task
+        $ack.Checked = $true; $permanent.Checked = $true
+    }.GetNewClosure())
     $confirm.Add_Click({
         & $updateConfirm
         if (-not $confirm.Enabled) { return }
@@ -1885,7 +1899,9 @@ function Show-CleanupConfirmForm {
     }.GetNewClosure())
     $cancel.Add_Click({ $form.Close() }.GetNewClosure())
     $row = 0
-    foreach ($control in @($details, $choices, $preview, $ack, $permanent, $actions)) { $layout.Controls.Add($control, 0, $row); $row++ }
+    $header = New-Object Windows.Forms.Panel; $header.Dock = 'Fill'
+    $header.Controls.Add($details); $header.Controls.Add($selectAll)
+    foreach ($control in @($header, $choices, $preview, $ack, $permanent, $actions)) { $layout.Controls.Add($control, 0, $row); $row++ }
     $form.Controls.Add($layout)
     $form.Add_Shown({ Set-FormIcon $form; Set-DestructiveButton $confirm; & $renderPreview; $timer.Start(); $source.Focus() | Out-Null; $form.Tag = 'Ready' }.GetNewClosure())
     try { if ($Global:MainForm) { [void]$form.ShowDialog($Global:MainForm) } else { [void]$form.ShowDialog() }; return $state.Result }
