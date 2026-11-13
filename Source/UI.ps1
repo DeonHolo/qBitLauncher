@@ -420,6 +420,7 @@ function Get-InventoryResponsive {
     $form.Name = 'FolderScanForm'; $form.Text = 'Scanning files'; $form.ClientSize = New-Object Drawing.Size(620, 225)
     $form.MinimumSize = New-Object Drawing.Size(520, 260); $form.AutoScaleMode = 'Dpi'; $form.StartPosition = 'CenterParent'; $form.MaximizeBox = $false
     $form.Font = New-Object Drawing.Font('Segoe UI', 10)
+    $form.BackColor = $Global:CurrentTheme.FormBack; $form.ForeColor = $Global:CurrentTheme.TextFore
     $layout = New-Object Windows.Forms.TableLayoutPanel; $layout.Dock = 'Fill'; $layout.Padding = New-Object Windows.Forms.Padding(18); $layout.ColumnCount = 1; $layout.RowCount = 4
     [void]$layout.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent', 100)))
     foreach ($spec in @(@('Absolute', 34), @('Absolute', 36), @('Percent', 100), @('Absolute', 38))) { [void]$layout.RowStyles.Add((New-Object Windows.Forms.RowStyle($spec[0], $spec[1]))) }
@@ -429,6 +430,7 @@ function Get-InventoryResponsive {
     $actions = New-Object Windows.Forms.FlowLayoutPanel; $actions.Dock = 'Fill'; $actions.FlowDirection = 'RightToLeft'; $actions.WrapContents = $false
     $cancel = New-Object Windows.Forms.Button; $cancel.Name = 'CancelScan'; $cancel.Text = 'Cancel'; $cancel.AutoSize = $true; $cancel.MinimumSize = New-Object Drawing.Size(80, 32)
     $found = New-Object Windows.Forms.Button; $found.Name = 'UseFoundFiles'; $found.Text = 'Use files found'; $found.AutoSize = $true; $found.MinimumSize = New-Object Drawing.Size(130, 32); $found.Enabled = $false
+    Set-ThemedButton $cancel; Set-ThemedButton $found
     $actions.Controls.AddRange(@($cancel, $found)); $form.CancelButton = $cancel
     $state = @{ Result = $null; Error = $null }
     $cancel.Add_Click({ $form.Close() }.GetNewClosure())
@@ -448,10 +450,21 @@ function Get-InventoryResponsive {
             if ($scan.Operation.IsCompleted) { $state.Result = $scan.Operation.GetAwaiter().GetResult(); $timer.Stop(); $form.Close() }
         } catch { $state.Error = $_.Exception.GetBaseException(); $timer.Stop(); $form.Close() }
     }.GetNewClosure())
-    $form.Add_Shown({ Set-FormIcon $form; $timer.Start(); $form.Tag = 'Ready' }.GetNewClosure())
     Write-LogMessage ('Scan started: ' + [IO.Path]::GetFullPath($Path))
     try {
-        if ($Global:MainForm -and -not $Global:MainForm.IsDisposed) { [void]$form.ShowDialog($Global:MainForm) } else { [void]$form.ShowDialog() }
+        if ($scan.Operation.IsCompleted) {
+            $state.Result = $scan.Operation.GetAwaiter().GetResult()
+        }
+        else {
+            # Progress must not depend on Shown or on title-bar/icon styling.
+            # An appearance error used to leave a live scan permanently unpolled.
+            try { & { $ErrorActionPreference = 'Stop'; Set-FormIcon $form } }
+            catch { Write-LogMessage ('Scan window appearance could not be applied: ' + $_.Exception.Message) }
+            $form.Tag = 'Ready'
+            $timer.Start()
+            Write-LogMessage 'Scan progress timer started.'
+            if ($Global:MainForm -and -not $Global:MainForm.IsDisposed) { [void]$form.ShowDialog($Global:MainForm) } else { [void]$form.ShowDialog() }
+        }
         if ($state.Error) { throw $state.Error }
         if (-not $state.Result) { throw [OperationCanceledException]::new('Scan cancelled.') }
         $inventory = ConvertTo-FolderInventory $state.Result
