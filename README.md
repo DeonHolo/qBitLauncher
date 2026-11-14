@@ -23,6 +23,10 @@ qBittorrent sends the finished download to qBitLauncher. Choose an extraction de
 
 Different games can extract at the same time. A large extraction or an open result window does not hold up another game. Opening the same source twice is blocked to prevent duplicate extraction.
 
+To return after closing a window, open qBitLauncher without a file, choose a game under **Recent sessions**, and click **Reopen session**. The session remembers its source, extracted folder, and torrent identity. It opens the saved game folder without extracting again. **Open extracted files** in the archive dialog also opens the chosen destination directly.
+
+From an open game window, use **More → Reopen saved session → game** to open another saved game in a separate window. The current session stays open.
+
 Scanning shows the current folder, elapsed time, and counts of checked files and discovered runnables. **Use files found** stops the remaining scan and opens the results already available. **Cancel** closes the scan without waiting for disk I/O. After extraction, qBitLauncher checks expected filenames and sizes when 7-Zip can list the archive, and reports incomplete output with its destination.
 
 ## Find the right file

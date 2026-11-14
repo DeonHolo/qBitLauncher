@@ -3,7 +3,8 @@
 param(
     [string]$filePathFromQB,
     [string]$torrentHashFromQB,
-    [string]$torrentNameFromQB
+    [string]$torrentNameFromQB,
+    [string]$SavedSessionId
 )
 
 # <BUNDLED_FUNCTIONS>
@@ -475,69 +476,77 @@ function Show-ThemedMessageBox {
 # -------------------------
 # Helper: qBittorrent Local API
 # -------------------------
-function Remove-QBittorrentTorrent {
-    param(
-        [string]$TorrentHash,
-        [bool]$DeleteFiles
-    )
-
-    if ([string]::IsNullOrWhiteSpace($TorrentHash)) {
-        throw "No qBittorrent torrent hash was provided. Update the qBittorrent command to pass %I."
+function Invoke-QBittorrentApiRequest {
+    param($Connection, [string]$Endpoint, [ValidateSet('Get', 'Post')][string]$Method = 'Get', [hashtable]$Body)
+    $request = @{
+        Uri = $Connection.BaseUrl + '/api/v2/' + $Endpoint
+        Method = $Method; WebSession = $Connection.Session; Headers = $Connection.Headers
+        UseBasicParsing = $true; TimeoutSec = 8; ErrorAction = 'Stop'
     }
+    if ($Method -eq 'Post') { $request.Body = $Body; $request.ContentType = 'application/x-www-form-urlencoded; charset=UTF-8' }
+    try { return Invoke-WebRequest @request }
+    catch {
+        $message = $_.Exception.GetBaseException().Message
+        $failure = $_.Exception; $status = $null
+        while ($failure) {
+            if ($failure.Response -and $failure.Response.StatusCode) { $status = [int]$failure.Response.StatusCode; break }
+            $failure = $failure.InnerException
+        }
+        if ($status -eq 403 -and $Endpoint -eq 'auth/login') {
+            throw "qBittorrent blocked the login request (HTTP 403). Too many failed attempts can cause a temporary block. Wait for it to expire, then use Test connection in More → Settings. Check qBittorrent's Web UI access rules if the block persists."
+        }
+        if ($status -in @(401, 403) -or $message -match 'Unauthorized|Forbidden|\b401\b|\b403\b') {
+            throw 'qBittorrent requires valid Web UI credentials. Enter the username/password in More → Settings and use Test connection.'
+        }
+        if ($status) { throw "qBittorrent's API returned HTTP $status at $($Connection.BaseUrl). Check the API URL and qBittorrent Web UI settings." }
+        if ($message -match 'Unable to connect|actively refused|timed out|No connection could be made|name could not be resolved') {
+            throw "Could not connect to qBittorrent's local API at $($Connection.BaseUrl)."
+        }
+        throw
+    }
+}
 
-    $baseUrl = $Global:UserSettings.QbittorrentWebUrl
+function Connect-QBittorrentApi {
+    param([hashtable]$Settings = $Global:UserSettings)
+    $baseUrl = $Settings.QbittorrentWebUrl
     if ([string]::IsNullOrWhiteSpace($baseUrl)) {
         throw "qBittorrent local API URL is empty. Set it in Settings."
     }
 
     $baseUrl = $baseUrl.Trim().TrimEnd('/')
     $parsedUrl = $null
-    if (-not [System.Uri]::TryCreate($baseUrl, [System.UriKind]::Absolute, [ref]$parsedUrl) -or $parsedUrl.Scheme -notin @('http', 'https')) {
+    if (-not [System.Uri]::TryCreate($baseUrl, [System.UriKind]::Absolute, [ref]$parsedUrl) -or $parsedUrl.Scheme -notin @('http', 'https') -or $parsedUrl.UserInfo) {
         throw "qBittorrent local API URL is invalid: $baseUrl"
     }
 
-    $session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
-    $headers = @{ Origin = $parsedUrl.GetLeftPart([UriPartial]::Authority); Referer = $baseUrl + '/' }
-
-    try {
-        if (-not [string]::IsNullOrWhiteSpace($Global:UserSettings.QbittorrentUsername)) {
-            $loginUri = "$baseUrl/api/v2/auth/login"
-            $loginBody = @{
-                username = $Global:UserSettings.QbittorrentUsername
-                password = $Global:UserSettings.QbittorrentPassword
-            }
-
-            $loginResponse = Invoke-WebRequest -Uri $loginUri -Method Post -Body $loginBody -ContentType 'application/x-www-form-urlencoded' -WebSession $session -Headers $headers -UseBasicParsing -TimeoutSec 8 -ErrorAction Stop
-            if (([string]$loginResponse.Content).Trim() -notmatch '^Ok\.?$') {
-                throw "qBittorrent login failed. Check the local API username and password in Settings."
-            }
-        }
-
-        $deleteUri = "$baseUrl/api/v2/torrents/delete"
-        $deleteBody = @{
-            hashes = $TorrentHash.Trim()
-            deleteFiles = $DeleteFiles.ToString().ToLowerInvariant()
-        }
-
-        Invoke-WebRequest -Uri $deleteUri -Method Post -Body $deleteBody -ContentType 'application/x-www-form-urlencoded' -WebSession $session -Headers $headers -UseBasicParsing -TimeoutSec 8 -ErrorAction Stop | Out-Null
+    $connection = @{
+        BaseUrl = $baseUrl; Session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+        Headers = @{ Origin = $parsedUrl.GetLeftPart([UriPartial]::Authority); Referer = $baseUrl + '/' }
     }
-    catch {
-        $message = $_.Exception.Message
-        $failure = $_.Exception
-        $status = $null
-        while ($failure) {
-            if ($failure.Response -and $failure.Response.StatusCode) { $status = [int]$failure.Response.StatusCode; break }
-            $failure = $failure.InnerException
+    if (-not [string]::IsNullOrWhiteSpace($Settings.QbittorrentUsername)) {
+        $response = Invoke-QBittorrentApiRequest -Connection $connection -Endpoint 'auth/login' -Method Post -Body @{
+            username = $Settings.QbittorrentUsername; password = $Settings.QbittorrentPassword
         }
-        if ($status -in @(401, 403) -or $message -match 'Unauthorized|Forbidden|\b401\b|\b403\b') {
-            throw "qBittorrent rejected the request. Enter the local API username/password in qBitLauncher Settings."
-        }
-        if ($status) { throw "qBittorrent's API returned HTTP $status at $baseUrl. Check the API URL and qBittorrent Web UI settings." }
-        if ($message -match 'Unable to connect|actively refused|timed out|No connection could be made|name could not be resolved') {
-            throw "Could not connect to qBittorrent's local API at $baseUrl."
-        }
-        throw
+        $content = if ($response.Content -is [byte[]]) { [Text.Encoding]::UTF8.GetString($response.Content) } else { [string]$response.Content }
+        if ($content.Trim() -match '^Fails\.?$') { throw 'qBittorrent login failed. The Web UI username or password was rejected. Re-enter both in More → Settings and use Test connection.' }
+        if ($content.Trim() -and $content.Trim() -notmatch '^Ok\.?$') { throw 'qBittorrent returned an unexpected login response. Check the API URL in More → Settings.' }
     }
+    # Confirm access with a read-only request before allowing any torrent changes.
+    # This also validates sessions from versions with an empty login response.
+    $response = Invoke-QBittorrentApiRequest -Connection $connection -Endpoint 'app/version'
+    $version = if ($response.Content -is [byte[]]) { [Text.Encoding]::UTF8.GetString($response.Content) } else { [string]$response.Content }
+    if ($version.Trim() -notmatch '^v?\d+\.\d+(?:\.\d+)?(?:\S*)$') { throw 'The API URL did not return a qBittorrent version. Check the API URL in More → Settings.' }
+    $connection.Version = $version.Trim()
+    return $connection
+}
+
+function Remove-QBittorrentTorrent {
+    param([string]$TorrentHash, [bool]$DeleteFiles)
+    if ([string]::IsNullOrWhiteSpace($TorrentHash)) { throw 'No qBittorrent torrent hash was provided. Update the qBittorrent command to pass %I.' }
+    $connection = Connect-QBittorrentApi
+    [void](Invoke-QBittorrentApiRequest -Connection $connection -Endpoint 'torrents/delete' -Method Post -Body @{
+        hashes = $TorrentHash.Trim(); deleteFiles = $DeleteFiles.ToString().ToLowerInvariant()
+    })
 }
 
 function Get-QBittorrentApiBaseUrl {
@@ -1398,7 +1407,8 @@ function Show-ExtractionConfirmForm {
     $form = New-Object System.Windows.Forms.Form
     $form.AutoScaleMode = "Dpi"
     $form.Text = $Title
-    $form.Size = New-Object System.Drawing.Size(700, 250)
+    $form.Name = 'ExtractionConfirmForm'
+    $form.Size = New-Object System.Drawing.Size(700, 280)
     $form.StartPosition = 'CenterScreen'
     $form.Add_Load({ Set-FormPositionNearOwner -Form $this })
     $form.FormBorderStyle = 'FixedDialog'
@@ -1412,7 +1422,7 @@ function Show-ExtractionConfirmForm {
     $label = New-Object System.Windows.Forms.Label
     $label.Location = New-Object System.Drawing.Point(20, 15)
     $label.Size = New-Object System.Drawing.Size(660, 40)
-    $label.Text = "An archive file was found. Proceed with extraction?`nFile: $([IO.Path]::GetFileName($ArchivePath))"
+    $label.Text = 'Extract this archive, or open files that are already extracted.'
     $label.ForeColor = $colors.TextFore
     $form.Controls.Add($label)
 
@@ -1426,6 +1436,7 @@ function Show-ExtractionConfirmForm {
 
     # Destination textbox
     $destTextBox = New-Object System.Windows.Forms.TextBox
+    $destTextBox.Name = 'ExtractionDestination'
     $destTextBox.Location = New-Object System.Drawing.Point(120, 63)
     $destTextBox.Size = New-Object System.Drawing.Size(450, 25)
     $destTextBox.Text = $DefaultDestination
@@ -1452,14 +1463,15 @@ function Show-ExtractionConfirmForm {
     $infoLabel = New-Object System.Windows.Forms.Label
     $infoLabel.Location = New-Object System.Drawing.Point(20, 100)
     $infoLabel.Size = New-Object System.Drawing.Size(660, 40)
-    $infoLabel.Text = "Full archive path: $ArchivePath"
+    $infoLabel.Text = $ArchivePath
+    $infoLabel.UseMnemonic = $false; $infoLabel.AutoEllipsis = $true
     $infoLabel.ForeColor = $colors.SecondaryText
     $infoLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9)
     $form.Controls.Add($infoLabel)
 
     # Buttons
     $extractButton = New-Object System.Windows.Forms.Button
-    $extractButton.Location = New-Object System.Drawing.Point(300, 160)
+    $extractButton.Location = New-Object System.Drawing.Point(95, 190)
     $extractButton.Size = New-Object System.Drawing.Size(100, 35)
     $extractButton.Text = "&Extract"
     # Don't set DialogResult - we'll handle validation first
@@ -1494,20 +1506,33 @@ function Show-ExtractionConfirmForm {
             $form.Close()
         }.GetNewClosure())
 
-    # Skip Extraction button - for when archive is irrelevant (e.g., ZIP in crack folder)
+    $openExistingButton = New-Object System.Windows.Forms.Button
+    $openExistingButton.Name = 'OpenExtractedFiles'
+    $openExistingButton.Location = New-Object System.Drawing.Point(205, 190)
+    $openExistingButton.Size = New-Object System.Drawing.Size(170, 35)
+    $openExistingButton.Text = 'Open extracted files'
+    $openExistingButton.Add_Click({
+        if (-not [IO.Path]::IsPathRooted($destTextBox.Text) -or -not (Test-Path -LiteralPath $destTextBox.Text -PathType Container)) {
+            Show-ThemedMessageBox -Message 'Choose the existing extracted folder above, then try again.' -Title 'Extracted folder missing' -Icon Warning | Out-Null
+            return
+        }
+        $form.DialogResult = [Windows.Forms.DialogResult]::Retry; $form.Close()
+    }.GetNewClosure())
+
+    # Scanning the original location is separate from reopening extracted files.
     $skipToExeButton = New-Object System.Windows.Forms.Button
-    $skipToExeButton.Location = New-Object System.Drawing.Point(410, 160)
-    $skipToExeButton.Size = New-Object System.Drawing.Size(120, 35)
-    $skipToExeButton.Text = "&Skip Extraction"
+    $skipToExeButton.Location = New-Object System.Drawing.Point(385, 190)
+    $skipToExeButton.Size = New-Object System.Drawing.Size(160, 35)
+    $skipToExeButton.Text = 'Scan source folder'
     $skipToExeButton.DialogResult = [System.Windows.Forms.DialogResult]::Ignore
 
     $cancelButton = New-Object System.Windows.Forms.Button
-    $cancelButton.Location = New-Object System.Drawing.Point(540, 160)
+    $cancelButton.Location = New-Object System.Drawing.Point(555, 190)
     $cancelButton.Size = New-Object System.Drawing.Size(100, 35)
     $cancelButton.Text = "&Cancel"
     $cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::No
 
-    foreach ($button in @($extractButton, $skipToExeButton, $cancelButton)) {
+    foreach ($button in @($extractButton, $openExistingButton, $skipToExeButton, $cancelButton)) {
         Set-ThemedButton -Button $button -Colors $colors
         $form.Controls.Add($button)
     }
@@ -1996,7 +2021,13 @@ function Show-InstallerGUI {
 $Global:PendingUpdateCheck = Start-BackgroundUpdateCheck
 $Global:WorkflowLock = $null
 try {
-    if ([string]::IsNullOrWhiteSpace($filePathFromQB)) {
+    $resumeSession = $null
+    if ($SavedSessionId) {
+        $resumeSession = Get-LauncherSessionRequest -Id $SavedSessionId
+        $filePathFromQB = $resumeSession.SourcePath
+        $torrentHashFromQB = $resumeSession.TorrentHash; $torrentNameFromQB = $resumeSession.TorrentName
+    }
+    if (-not $resumeSession -and [string]::IsNullOrWhiteSpace($filePathFromQB)) {
         if (-not (Test-Path -LiteralPath $Global:ConfigFile)) {
             $installChoice = Show-InstallerGUI
             if ($installChoice -eq 'Installed' -or $installChoice -eq 'Cancel') { return }
@@ -2004,15 +2035,22 @@ try {
         }
         do { $runManual = Show-SetupMenu } while ($runManual -eq [Windows.Forms.DialogResult]::Retry)
         if ($runManual -ne [Windows.Forms.DialogResult]::OK) { return }
-        $manualPath = $Global:PendingManualFolder
-        if (-not $manualPath) {
-            $initialFolder = if ($Global:UserSettings.RecentFolders.Count) { $Global:UserSettings.RecentFolders[0] } else { [Environment]::GetFolderPath('Desktop') }
-            $manualPath = Select-ExtractionPath -DefaultPath $initialFolder
+        if ($Global:PendingSessionId) {
+            $resumeSession = Get-LauncherSessionRequest -Id $Global:PendingSessionId
+            $filePathFromQB = $resumeSession.SourcePath
+            $torrentHashFromQB = $resumeSession.TorrentHash; $torrentNameFromQB = $resumeSession.TorrentName
         }
-        if (-not $manualPath) { return }
-        $filePathFromQB = $manualPath
+        else {
+            $manualPath = $Global:PendingManualFolder
+            if (-not $manualPath) {
+                $initialFolder = if ($Global:UserSettings.RecentFolders.Count) { $Global:UserSettings.RecentFolders[0] } else { [Environment]::GetFolderPath('Desktop') }
+                $manualPath = Select-ExtractionPath -DefaultPath $initialFolder
+            }
+            if (-not $manualPath) { return }
+            $filePathFromQB = $manualPath
+        }
     }
-    if (-not (Test-Path -LiteralPath $filePathFromQB)) { throw "Path not found: $filePathFromQB" }
+    if (-not $resumeSession -and -not (Test-Path -LiteralPath $filePathFromQB)) { throw "Path not found: $filePathFromQB" }
     $filePathFromQB = [IO.Path]::GetFullPath($filePathFromQB)
     # Different games run independently. Only duplicate source requests conflict.
     $jobKey = 'path:' + (Get-CanonicalPath $filePathFromQB).ToLowerInvariant()
@@ -2023,45 +2061,65 @@ try {
         return
     }
     Get-UserSettings
-    $contentItem = Get-Item -LiteralPath $filePathFromQB -ErrorAction Stop
-    $rootFolder = if ($contentItem.PSIsContainer) { $contentItem.FullName } else { $contentItem.DirectoryName }
-    [void](Add-RecentFolder $rootFolder)
-    $inventory = $null; $archive = $null; $runnables = @()
-    if ($contentItem.PSIsContainer) {
-        $inventory = Get-InventoryResponsive $rootFolder
-        $primary = Get-PrimaryContent $inventory
-        if ($primary.Kind -eq 'Runnables') { $runnables = @($primary.Files) }
-        elseif ($primary.Kind -eq 'Archives') {
-            if ($primary.Files.Count -gt 1 -or $inventory.Runnables.Count) {
-                $choice = Show-ArchiveChoice -Files $primary.Files -HasRunnables ($inventory.Runnables.Count -gt 0)
-                if (-not $choice) { return }
-                if ($choice -is [string] -and $choice -eq 'Runnables') { $runnables = @($inventory.Runnables) } else { $archive = $choice }
-            } else { $archive = $primary.Files[0] }
-        } else {
-            Show-ThemedMessageBox -Message 'No executable or supported archive was found. You can open this folder in Explorer.' -Title 'Folder scanned' -Icon Information | Out-Null
-            Start-Process explorer.exe -ArgumentList ('"' + $rootFolder + '"'); return
+    $savedSession = $null
+    if ($resumeSession) {
+        $resumeSession = Get-LauncherSessionRequest -Id $resumeSession.Id
+        $SavedSessionId = $resumeSession.Id
+        $rootFolder = $resumeSession.RootFolder
+        $torrentHashFromQB = $resumeSession.TorrentHash; $torrentNameFromQB = $resumeSession.TorrentName
+        $verifyArchive = if ($resumeSession.ArchivePath -and (Test-Path -LiteralPath $resumeSession.ArchivePath -PathType Leaf)) { $resumeSession.ArchivePath } else { '' }
+        Write-LogMessage ('Reopening saved session: ' + $rootFolder)
+        $runnables = if ($resumeSession.RunnablePath) { @(Get-Item -LiteralPath $resumeSession.RunnablePath -ErrorAction Stop) } else { @(Get-AllRunnables $rootFolder -VerifyArchivePath $verifyArchive) }
+        $savedSession = Save-LauncherSession -SourcePath $filePathFromQB -RootFolder $rootFolder -ArchivePath $resumeSession.ArchivePath -TorrentHash $torrentHashFromQB -TorrentName $torrentNameFromQB
+    }
+    else {
+        $contentItem = Get-Item -LiteralPath $filePathFromQB -ErrorAction Stop
+        $rootFolder = if ($contentItem.PSIsContainer) { $contentItem.FullName } else { $contentItem.DirectoryName }
+        [void](Add-RecentFolder $rootFolder)
+        $inventory = $null; $archive = $null; $runnables = @()
+        if ($contentItem.PSIsContainer) {
+            $inventory = Get-InventoryResponsive $rootFolder
+            $primary = Get-PrimaryContent $inventory
+            if ($primary.Kind -eq 'Runnables') { $runnables = @($primary.Files) }
+            elseif ($primary.Kind -eq 'Archives') {
+                if ($primary.Files.Count -gt 1 -or $inventory.Runnables.Count) {
+                    $choice = Show-ArchiveChoice -Files $primary.Files -HasRunnables ($inventory.Runnables.Count -gt 0)
+                    if (-not $choice) { return }
+                    if ($choice -is [string] -and $choice -eq 'Runnables') { $runnables = @($inventory.Runnables) } else { $archive = $choice }
+                } else { $archive = $primary.Files[0] }
+            } else {
+                Show-ThemedMessageBox -Message 'No executable or supported archive was found. You can open this folder in Explorer.' -Title 'Folder scanned' -Icon Information | Out-Null
+                Start-Process explorer.exe -ArgumentList ('"' + $rootFolder + '"'); return
+            }
+        } elseif ($contentItem.Extension -in @('.exe', '.bat', '.cmd')) { $runnables = @($contentItem) }
+        elseif ($contentItem.Extension.TrimStart('.').ToLowerInvariant() -in $ArchiveExtensions -or $contentItem.Name -match '(?i)\.(?:7z|zip)\.001$') { $archive = $contentItem }
+        else { Start-Process explorer.exe -ArgumentList ('"' + $rootFolder + '"'); return }
+        if ($archive) {
+            $baseName = $archive.BaseName -replace '(?i)\.(?:7z|zip)$', '' -replace '(?i)\.part0*1$', ''
+            $baseFolder = if ($Global:UserSettings.LastExtractionPath) { $Global:UserSettings.LastExtractionPath } else { $archive.DirectoryName }
+            $defaultDestination = Join-Path $baseFolder $baseName
+            $previousSession = Get-LauncherSession -SourcePath $filePathFromQB
+            if ($previousSession -and $previousSession.ArchivePath -and (Get-PreferencePathKey $previousSession.ArchivePath) -eq (Get-PreferencePathKey $archive.FullName)) { $defaultDestination = $previousSession.RootFolder }
+            $extraction = Show-ExtractionConfirmForm -ArchivePath $archive.FullName -DefaultDestination $defaultDestination
+            if ($extraction.Confirmed) {
+                $destination = Expand-ArchiveFile -ArchivePath $archive.FullName -DestinationPath $extraction.DestinationPath
+                if (-not $destination) { return }
+                $rootFolder = $destination
+                $Global:UserSettings.LastExtractionPath = [IO.Path]::GetDirectoryName($destination.TrimEnd([char]92)); [void](Save-UserSettings)
+                $savedSession = Save-LauncherSession -SourcePath $filePathFromQB -RootFolder $rootFolder -ArchivePath $archive.FullName -TorrentHash $torrentHashFromQB -TorrentName $torrentNameFromQB
+                $runnables = @(Get-AllRunnables $rootFolder -VerifyArchivePath $archive.FullName)
+            } elseif ($extraction.UseExisting) {
+                $rootFolder = $extraction.DestinationPath
+                $savedSession = Save-LauncherSession -SourcePath $filePathFromQB -RootFolder $rootFolder -ArchivePath $archive.FullName -TorrentHash $torrentHashFromQB -TorrentName $torrentNameFromQB
+                $runnables = @(Get-AllRunnables $rootFolder -VerifyArchivePath $archive.FullName)
+            } elseif ($extraction.SkippedExtraction) {
+                $runnables = if ($inventory) { @($inventory.Runnables) } else { @(Get-AllRunnables $rootFolder) }
+            } else { return }
         }
-    } elseif ($contentItem.Extension -in @('.exe', '.bat', '.cmd')) { $runnables = @($contentItem) }
-    elseif ($contentItem.Extension.TrimStart('.').ToLowerInvariant() -in $ArchiveExtensions -or $contentItem.Name -match '(?i)\.(?:7z|zip)\.001$') { $archive = $contentItem }
-    else { Start-Process explorer.exe -ArgumentList ('"' + $rootFolder + '"'); return }
-    if ($archive) {
-        $baseName = $archive.BaseName -replace '(?i)\.(?:7z|zip)$', '' -replace '(?i)\.part0*1$', ''
-        $baseFolder = if ($Global:UserSettings.LastExtractionPath) { $Global:UserSettings.LastExtractionPath } else { $archive.DirectoryName }
-        $extraction = Show-ExtractionConfirmForm -ArchivePath $archive.FullName -DefaultDestination (Join-Path $baseFolder $baseName)
-        if ($extraction.Confirmed) {
-            $destination = Expand-ArchiveFile -ArchivePath $archive.FullName -DestinationPath $extraction.DestinationPath
-            if (-not $destination) { return }
-            $rootFolder = $destination
-            $Global:UserSettings.LastExtractionPath = [IO.Path]::GetDirectoryName($destination.TrimEnd([char]92)); [void](Save-UserSettings)
-            $runnables = @(Get-AllRunnables $rootFolder -VerifyArchivePath $archive.FullName)
-        } elseif ($extraction.UseExisting) {
-            $rootFolder = $extraction.DestinationPath; $runnables = @(Get-AllRunnables $rootFolder -VerifyArchivePath $archive.FullName)
-        } elseif ($extraction.SkippedExtraction) {
-            $runnables = if ($inventory) { @($inventory.Runnables) } else { @(Get-AllRunnables $rootFolder) }
-        } else { return }
     }
     if ($runnables.Count) {
-        Show-ExecutableSelectionForm -FoundExecutables $runnables -WindowTitle ('qBitLauncher — ' + $jobLabel) -RootFolder $rootFolder -TorrentHash $torrentHashFromQB -TorrentName $torrentNameFromQB
+        if (-not $savedSession) { $savedSession = Save-LauncherSession -SourcePath $filePathFromQB -RootFolder $rootFolder -TorrentHash $torrentHashFromQB -TorrentName $torrentNameFromQB }
+        Show-ExecutableSelectionForm -FoundExecutables $runnables -WindowTitle ('qBitLauncher — ' + $jobLabel) -RootFolder $rootFolder -TorrentHash $savedSession.TorrentHash -TorrentName $savedSession.TorrentName -SessionId $savedSession.Id
     } else {
         Show-ThemedMessageBox -Message 'No runnable files were found in the selected folder.' -Title 'Scan complete' -Icon Information | Out-Null
         Start-Process explorer.exe -ArgumentList ('"' + $rootFolder + '"')

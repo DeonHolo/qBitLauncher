@@ -192,6 +192,7 @@ try {
                 Assert-UICheck ($search.BorderStyle -eq 'None' -and $search.Parent.Parent.ClientSize.Width -ge $search.Parent.Right) 'Search should use the themed field and stay inside its layout.'
                 $more = Get-UITestControl $form 'MoreButton'
                 Assert-UICheck ($more.Visible -and -not $arguments.Visible) 'Secondary launch options should be tucked under More by default.'
+                Assert-UICheck ($more.ContextMenuStrip.Items.ContainsKey('ReopenSavedSessionMenu')) 'More must expose reopening a saved session in another window.'
                 $more.ContextMenuStrip.Items[0].PerformClick()
                 Assert-UICheck ($arguments.Visible -and $admin.Visible) 'Launch options must remain reachable from More.'
                 $more.ContextMenuStrip.Items[0].PerformClick()
@@ -476,6 +477,7 @@ try {
     }
 
     if ($Case -in @('All', 'Setup')) {
+        [void](Save-LauncherSession -SourcePath $sourceDirectory -RootFolder $extractedDirectory -ArchivePath $archive -TorrentHash ('a' * 40) -TorrentName 'Session fixture')
         $setupTick = {
             param($state)
             $form = Get-UITestForm 'DashboardForm'
@@ -485,6 +487,8 @@ try {
             Assert-UICheck ($form.FormBorderStyle -eq 'Sizable') 'The setup form should adapt to the display.'
             $recent = Get-UITestControl $form 'RecentFolders'
             Assert-UICheck ($recent.Items.Count -gt 0) 'The dashboard should expose the remembered fixture folder.'
+            Assert-UICheck ((Get-UITestControl $form 'RecentSessions').Items.Count -gt 0 -and (Get-UITestControl $form 'ReopenSession').Enabled) 'The dashboard should offer saved sessions independently of recent folders.'
+            Assert-UICheck ((Get-UITestControl $form 'SessionFolder').Text -ceq $extractedDirectory) 'A saved session should show its exact extraction destination.'
             $state.Finished = $true
             $form.Close()
         }.GetNewClosure()

@@ -345,7 +345,7 @@ function Receive-AppWorker {
         $values = @($Task.PowerShell.EndInvoke($Task.Handle))
         if ($Task.PowerShell.HadErrors) { throw ($Task.PowerShell.Streams.Error | Select-Object -First 1).Exception }
         $Task.Result = @{ Values = $values; Error = $null }
-    } catch { $Task.Result = @{ Values = @(); Error = $_.Exception.Message } }
+    } catch { $Task.Result = @{ Values = @(); Error = $_.Exception.GetBaseException().Message } }
     finally { $Task.PowerShell.Dispose(); $Task.Disposed = $true }
     return $Task.Result
 }
@@ -631,7 +631,7 @@ function Show-CleanupConfirmForm {
 }
 
 function Invoke-CleanupSelection {
-    param($Choice, [string]$TorrentHash, [scriptblock]$OnMessage = {})
+    param($Choice, [string]$TorrentHash, [scriptblock]$OnMessage = {}, [string]$SessionId)
     if (-not ($Choice.RemoveSource -or $Choice.RemoveExtracted -or $Choice.RemoveTorrent)) { throw 'Select at least one cleanup item.' }
     $local = $Choice.RemoveSource -or $Choice.RemoveExtracted
     if ($local -and -not $Choice.Plan) { throw 'Prepare a file preview before cleanup.' }
@@ -641,13 +641,24 @@ function Invoke-CleanupSelection {
     if ($Choice.RemoveTorrent) {
         # Release seeding handles first. File deletion belongs to the local plan,
         # so selecting all three never makes qBittorrent delete the files twice.
+        Get-UserSettings
         $request = { param($hash) Remove-QBittorrentTorrent -TorrentHash $hash -DeleteFiles $false }
-        try { [void](Invoke-ResponsiveTask -Title 'Removing qBittorrent entry' -Action $request -Arguments @($TorrentHash) -Functions @('Remove-QBittorrentTorrent') -Variables @{ UserSettings = $Global:UserSettings } -NoCancel) }
+        $apiFunctions = @('Remove-QBittorrentTorrent', 'Connect-QBittorrentApi', 'Invoke-QBittorrentApiRequest')
+        try { [void](Invoke-ResponsiveTask -Title 'Removing qBittorrent entry' -Action $request -Arguments @($TorrentHash) -Functions $apiFunctions -Variables @{ UserSettings = $Global:UserSettings } -NoCancel) }
         catch {
-            $repair = Invoke-QBittorrentLocalApiRepairFlow -ErrorMessage $_.Exception.Message -RetryAction { Remove-QBittorrentTorrent -TorrentHash $TorrentHash -DeleteFiles $false }.GetNewClosure()
-            if ($repair.Status -ne 'RetrySucceeded') { throw $repair.Message }
+            $message = $_.Exception.GetBaseException().Message
+            if ($message -match 'login failed|requires valid Web UI credentials') {
+                if (-not (Show-SettingsForm -ConnectionError $message)) { throw [OperationCanceledException]::new('Cleanup cancelled while correcting qBittorrent credentials.') }
+                [void](Invoke-ResponsiveTask -Title 'Removing qBittorrent entry' -Action $request -Arguments @($TorrentHash) -Functions $apiFunctions -Variables @{ UserSettings = $Global:UserSettings } -NoCancel)
+            }
+            else {
+                $repair = Invoke-QBittorrentLocalApiRepairFlow -ErrorMessage $message -RetryAction { Remove-QBittorrentTorrent -TorrentHash $TorrentHash -DeleteFiles $false }.GetNewClosure()
+                if ($repair.Status -ne 'RetrySucceeded') { throw $repair.Message }
+            }
         }
-        $result.TorrentRemoved = $true; & $OnMessage 'qBittorrent entry removed'
+        $result.TorrentRemoved = $true
+        if ($SessionId) { Set-LauncherSessionTorrentRemoved -Id $SessionId }
+        & $OnMessage 'qBittorrent entry removed'
     }
     if ($local -and $Choice.Plan.Targets.Count) {
         $functions = @('Invoke-CleanupPlan', 'Get-CanonicalPath', 'Test-PathContains', 'Test-CleanupRoot', 'Test-TreeHasReparsePoint')
@@ -658,14 +669,14 @@ function Invoke-CleanupSelection {
 }
 
 function Show-ExecutableSelectionForm {
-    param([Management.Automation.PSObject[]]$FoundExecutables, [string]$WindowTitle = 'qBitLauncher', [string]$RootFolder, [string]$TorrentHash, [string]$TorrentName)
+    param([Management.Automation.PSObject[]]$FoundExecutables, [string]$WindowTitle = 'qBitLauncher', [string]$RootFolder, [string]$TorrentHash, [string]$TorrentName, [string]$SessionId)
     if (-not $RootFolder -and $FoundExecutables.Count) { $RootFolder = $FoundExecutables[0].DirectoryName }
     [void](Add-RecentFolder $RootFolder)
     Initialize-AppPresentation
     $colors = $Global:CurrentTheme
     $sourcePath = $filePathFromQB
     $rankedFiles = @($FoundExecutables | Sort-Object @{ Expression = { (Get-RunnableRank $_ $RootFolder).Score }; Descending = $true }, FullName)
-    $state = @{ SelectedPath = ''; LoadingPreference = $false; LastError = ''; IconTask = $null; Icons = @{}; AllFiles = $rankedFiles; Closing = $false }
+    $state = @{ SelectedPath = ''; LoadingPreference = $false; LastError = ''; IconTask = $null; Icons = @{}; AllFiles = $rankedFiles; Closing = $false; TorrentHash = $TorrentHash }
     $form = New-Object Windows.Forms.Form; $form.Name = 'ExecutableSelectionForm'; $form.Text = $WindowTitle
     $form.Size = New-Object Drawing.Size(1000, 620); $form.MinimumSize = New-Object Drawing.Size(780, 500)
     $form.StartPosition = 'CenterScreen'; $form.AutoScaleMode = 'Dpi'; $form.Font = New-Object Drawing.Font('Segoe UI', 10)
@@ -737,6 +748,29 @@ function Show-ExecutableSelectionForm {
     $moreMenu.Renderer = New-Object Windows.Forms.ToolStripProfessionalRenderer((New-Object QBitLauncher.MenuColors($colors.ControlBack, $colors.ButtonBack, $colors.Border)))
     $optionsItem = $moreMenu.Items.Add('Launch options'); $optionsItem.CheckOnClick = $true
     $optionsItem.Add_CheckedChanged({ $launchRow.Visible = $optionsItem.Checked; $layout.RowStyles[3].Height = $(if ($optionsItem.Checked) { 42 } else { 0 }) }.GetNewClosure())
+    [void]$moreMenu.Items.Add((New-Object Windows.Forms.ToolStripSeparator))
+    $savedSessionsMenu = $moreMenu.Items.Add('Reopen saved session'); $savedSessionsMenu.Name = 'ReopenSavedSessionMenu'
+    [void]$savedSessionsMenu.DropDownItems.Add('Loading sessions...')
+    $savedSessionsMenu.Add_DropDownOpening({
+        Get-UserSettings
+        foreach ($oldItem in @($savedSessionsMenu.DropDownItems)) { $oldItem.Dispose() }
+        $savedSessionsMenu.DropDownItems.Clear()
+        $savedSessionsMenu.DropDown.Renderer = $moreMenu.Renderer
+        $savedSessionsMenu.DropDown.ShowImageMargin = $false
+        $savedSessionsMenu.DropDown.ForeColor = $Global:CurrentTheme.TextFore
+        foreach ($entry in @(Get-LauncherSessions)) {
+            if ($entry.Id -eq $SessionId) { continue }
+            $item = $savedSessionsMenu.DropDownItems.Add([string]$entry.Name)
+            $item.Tag = $entry.Id; $item.ToolTipText = $entry.RootFolder
+            $item.Add_Click({
+                try { Start-LauncherSessionWindow -SessionId ([string]$this.Tag); & $addLog 'Opened saved session in another window' }
+                catch { Show-ThemedMessageBox -Message $_.Exception.GetBaseException().Message -Title 'Session unavailable' -Icon Warning | Out-Null }
+            }.GetNewClosure())
+        }
+        if (-not $savedSessionsMenu.DropDownItems.Count) {
+            $empty = $savedSessionsMenu.DropDownItems.Add('No other saved sessions yet'); $empty.Enabled = $false
+        }
+    }.GetNewClosure())
     [void]$moreMenu.Items.Add((New-Object Windows.Forms.ToolStripSeparator))
     foreach ($name in @('Settings', 'OpenLog', 'CopyError')) {
         $menuItem = $moreMenu.Items.Add($buttonMap[$name].Text.Replace('&', '')); $menuItem.Tag = $name
@@ -849,13 +883,15 @@ function Show-ExecutableSelectionForm {
     $buttonMap.Cleanup.Add_Click({
         try {
             $selected = if ($list.SelectedItems.Count) { [string]$list.SelectedItems[0].Tag } else { '' }
-            $choice = Show-CleanupConfirmForm -TorrentLabel $TorrentName -TorrentHash $TorrentHash -SourcePath $sourcePath -RootFolder $RootFolder -SelectedPath $selected
+            $choice = Show-CleanupConfirmForm -TorrentLabel $TorrentName -TorrentHash $state.TorrentHash -SourcePath $sourcePath -RootFolder $RootFolder -SelectedPath $selected
             if (-not $choice) { return }
             if ($choice.Permanent -and $choice.Plan -and $choice.Plan.Targets.Count) {
                 $confirmation = Show-ThemedMessageBox -Message 'Permanently delete the selected files? This cannot be undone.' -Title 'Permanent deletion' -Buttons YesNo -Icon Warning
                 if ($confirmation -ne [Windows.Forms.DialogResult]::Yes) { return }
             }
-            [void](Invoke-CleanupSelection -Choice $choice -TorrentHash $TorrentHash -OnMessage $addLog)
+            $cleanupMessages = { param($message); if ($message -eq 'qBittorrent entry removed') { $state.TorrentHash = '' }; & $addLog $message }.GetNewClosure()
+            $cleanupResult = Invoke-CleanupSelection -Choice $choice -TorrentHash $state.TorrentHash -OnMessage $cleanupMessages -SessionId $SessionId
+            if ($cleanupResult.TorrentRemoved) { $state.TorrentHash = '' }
             & $render
         } catch [OperationCanceledException] { & $addLog 'Cleanup cancelled' }
         catch { $state.LastError = $_.Exception.Message; & $addLog ('Cleanup failed: ' + $state.LastError); Show-ThemedMessageBox -Message $state.LastError -Title 'Cleanup' -Icon Error | Out-Null }
@@ -912,50 +948,80 @@ function Show-ExecutableSelectionForm {
 }
 
 function Show-SettingsForm {
+    param([string]$ConnectionError)
+    Get-UserSettings
     Initialize-AppPresentation
     $form = New-Object Windows.Forms.Form; $form.Name = 'SettingsForm'; $form.Text = "Settings — qBitLauncher $Global:ScriptVersion"
-    $form.Size = New-Object Drawing.Size(700, 570); $form.MinimumSize = New-Object Drawing.Size(560, 500); $form.StartPosition = 'CenterParent'; $form.AutoScaleMode = 'Dpi'
+    $form.Size = New-Object Drawing.Size(700, 615); $form.MinimumSize = New-Object Drawing.Size(560, 545); $form.StartPosition = 'CenterParent'; $form.AutoScaleMode = 'Dpi'
     $form.Font = New-Object Drawing.Font('Segoe UI', 10); $form.BackColor = $Global:CurrentTheme.FormBack; $form.ForeColor = $Global:CurrentTheme.TextFore
-    $layout = New-Object Windows.Forms.TableLayoutPanel; $layout.Dock = 'Fill'; $layout.ColumnCount = 2; $layout.RowCount = 10; $layout.Padding = New-Object Windows.Forms.Padding(20)
+    $layout = New-Object Windows.Forms.TableLayoutPanel; $layout.Dock = 'Fill'; $layout.ColumnCount = 2; $layout.RowCount = 11; $layout.Padding = New-Object Windows.Forms.Padding(20)
     [void]$layout.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Absolute', 170))); [void]$layout.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent', 100)))
-    for ($i = 0; $i -lt 7; $i++) { [void]$layout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', 40))) }
+    for ($i = 0; $i -lt 8; $i++) { [void]$layout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', 40))) }
     [void]$layout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 100))); [void]$layout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', 42))); [void]$layout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', 42)))
     $theme = New-Object Windows.Forms.ComboBox; $theme.DropDownStyle = 'DropDownList'; $theme.FlatStyle = 'Flat'; [void]$theme.Items.AddRange(@('Dracula', 'Light')); $theme.SelectedItem = $Global:UserSettings.Theme
-    $url = New-Object Windows.Forms.TextBox; $url.Text = $Global:UserSettings.QbittorrentWebUrl
-    $username = New-Object Windows.Forms.TextBox; $username.Text = $Global:UserSettings.QbittorrentUsername
-    $password = New-Object Windows.Forms.TextBox; $password.Text = $Global:UserSettings.QbittorrentPassword; $password.UseSystemPasswordChar = $true
+    $url = New-Object Windows.Forms.TextBox; $url.Name = 'ApiUrl'; $url.Text = $Global:UserSettings.QbittorrentWebUrl
+    $username = New-Object Windows.Forms.TextBox; $username.Name = 'ApiUsername'; $username.Text = $Global:UserSettings.QbittorrentUsername
+    $password = New-Object Windows.Forms.TextBox; $password.Name = 'ApiPassword'; $password.Text = $Global:UserSettings.QbittorrentPassword; $password.UseSystemPasswordChar = $true
+    $test = New-Object Windows.Forms.Button; $test.Name = 'TestApiConnection'; $test.Text = 'Test connection'; $test.Dock = 'Fill'; Set-ThemedButton $test
+    $connectionStatus = New-Object Windows.Forms.Label; $connectionStatus.Name = 'ApiConnectionStatus'; $connectionStatus.Text = 'Checks login without changing torrents or files.'
     $destination = New-Object Windows.Forms.TextBox; $destination.Text = $Global:UserSettings.LastExtractionPath
     $defaultAdmin = New-Object QBitLauncher.ThemedCheckBox; $defaultAdmin.Text = 'Request administrator privileges by default'; $defaultAdmin.Checked = [bool]$Global:UserSettings.DefaultAdmin
     $autoUpdate = New-Object QBitLauncher.ThemedCheckBox; $autoUpdate.Text = 'Check for updates in the background'; $autoUpdate.Checked = [bool]$Global:UserSettings.CheckForUpdates
-    $rows = @(@('Theme', $theme), @('qBittorrent API URL', $url), @('API username', $username), @('API password', $password), @('Extraction base folder', $destination), @('Launch preference', $defaultAdmin), @('Updates', $autoUpdate))
+    $rows = @(@('Theme', $theme), @('qBittorrent API URL', $url), @('API username', $username), @('API password', $password), @('Connection', $connectionStatus), @('Extraction base folder', $destination), @('Launch preference', $defaultAdmin), @('Updates', $autoUpdate))
     $row = 0
     foreach ($spec in $rows) {
         $label = New-Object Windows.Forms.Label; $label.Text = $spec[0]; $label.Dock = 'Fill'
+        if ($spec[0] -eq 'Connection') { $label.Dispose(); $label = $test }
         $control = $spec[1]; $control.Dock = 'Fill'; $control.BackColor = $Global:CurrentTheme.ControlBack; $control.ForeColor = $Global:CurrentTheme.TextFore
         $presented = if ($control -is [Windows.Forms.TextBox]) { New-AppTextField $control } else { $control }
         $layout.Controls.Add($label, 0, $row); $layout.Controls.Add($presented, 1, $row); $row++
     }
-    $info = New-Object Windows.Forms.Label; $info.Dock = 'Fill'; $info.Text = "Shortcut names, arguments, and admin mode are remembered per file.`r`nSaved passwords are encrypted for this Windows user.`r`nqBittorrent API repair preserves its existing username, password, HTTPS, and authentication settings."
+    $info = New-Object Windows.Forms.Label; $info.Name = 'SettingsInfo'; $info.Dock = 'Fill'; $info.Text = "Use the username and password from qBittorrent → Tools → Options → Web UI.`r`nTest connection checks the values entered above before saving.`r`nSaved passwords are encrypted for this Windows user."
     if ($Global:PasswordDecryptionFailed) { $info.Text += "`r`nThe saved password could not be decrypted. Enter it again to replace it." }
-    $layout.Controls.Add($info, 0, 7); $layout.SetColumnSpan($info, 2)
+    if ($ConnectionError) { $info.Text = $ConnectionError; $connectionStatus.Text = 'Correct the credentials, then save to retry cleanup.' }
+    $layout.Controls.Add($info, 0, 8); $layout.SetColumnSpan($info, 2)
     $update = New-Object Windows.Forms.Button; $update.Text = 'Check for updates'; $update.Dock = 'Fill'; Set-ThemedButton $update
     $updateStatus = New-Object Windows.Forms.Label; $updateStatus.Dock = 'Fill'
-    $layout.Controls.Add($update, 0, 8); $layout.Controls.Add($updateStatus, 1, 8)
+    $layout.Controls.Add($update, 0, 9); $layout.Controls.Add($updateStatus, 1, 9)
     $actions = New-Object Windows.Forms.FlowLayoutPanel; $actions.Dock = 'Fill'; $actions.FlowDirection = 'RightToLeft'
-    $save = New-Object Windows.Forms.Button; $save.Text = 'Save'; $save.AutoSize = $true; Set-ThemedButton $save
+    $save = New-Object Windows.Forms.Button; $save.Name = 'SaveSettings'; $save.Text = if ($ConnectionError) { 'Save and retry cleanup' } else { 'Save' }; $save.AutoSize = $true; Set-ThemedButton $save
     $cancel = New-Object Windows.Forms.Button; $cancel.Text = 'Cancel'; $cancel.AutoSize = $true; Set-ThemedButton $cancel
-    $actions.Controls.AddRange(@($save, $cancel)); $layout.Controls.Add($actions, 0, 9); $layout.SetColumnSpan($actions, 2)
-    $state = @{ Saved = $false; Check = $null }; $timer = New-Object Windows.Forms.Timer; $timer.Interval = 150
+    $actions.Controls.AddRange(@($save, $cancel)); $layout.Controls.Add($actions, 0, 10); $layout.SetColumnSpan($actions, 2)
+    $state = @{ Saved = $false; Check = $null; ApiTask = $null; ApiCandidate = $null; Verified = $null; SaveAfterTest = $false }
+    $timer = New-Object Windows.Forms.Timer; $timer.Interval = 150
+    $getApiSettings = { return @{ QbittorrentWebUrl = $url.Text.Trim(); QbittorrentUsername = $username.Text.Trim(); QbittorrentPassword = $password.Text } }.GetNewClosure()
+    $testConnection = {
+        param([bool]$SaveAfterTest)
+        if ($state.ApiTask) { return }
+        $state.ApiCandidate = & $getApiSettings; $state.Verified = $null; $state.SaveAfterTest = $SaveAfterTest
+        $state.ApiTask = Start-AppWorker -Action { param($settings) (Connect-QBittorrentApi -Settings $settings).Version } -Arguments @($state.ApiCandidate) -Functions @('Connect-QBittorrentApi', 'Invoke-QBittorrentApiRequest')
+        foreach ($field in @($url, $username, $password, $save, $test)) { $field.Enabled = $false }
+        $connectionStatus.Text = 'Checking connection...'; $timer.Start()
+    }.GetNewClosure()
+    $test.Add_Click({ & $testConnection $false }.GetNewClosure())
     $update.Add_Click({
         if ($Global:AvailableVersion) { [void](Show-UpdatePrompt -NewVersion $Global:AvailableVersion); return }
         $state.Check = Start-BackgroundUpdateCheck -Force; $update.Enabled = $false; $updateStatus.Text = 'Checking...'; $timer.Start()
-        if (-not $state.Check) { $updateStatus.Text = 'Checks are disabled for this diagnostic session.'; $update.Enabled = $true; $timer.Stop() }
+        if (-not $state.Check) { $updateStatus.Text = 'Checks are disabled for this diagnostic session.'; $update.Enabled = $true; if (-not $state.ApiTask) { $timer.Stop() } }
     }.GetNewClosure())
     $timer.Add_Tick({
+        if ($state.ApiTask) {
+            $apiResult = Receive-AppWorker $state.ApiTask
+            if ($apiResult) {
+                $state.ApiTask = $null
+                foreach ($field in @($url, $username, $password, $save, $test)) { $field.Enabled = $true }
+                if ($apiResult.Error) { $connectionStatus.Text = 'Connection failed. See details below.'; $info.Text = $apiResult.Error; $state.SaveAfterTest = $false }
+                else {
+                    $state.Verified = $state.ApiCandidate; $connectionStatus.Text = 'Connected to qBittorrent ' + $apiResult.Values[0]; $info.Text = 'Connection verified. No torrents or files were changed.'
+                    if ($state.SaveAfterTest) { $state.SaveAfterTest = $false; $save.PerformClick() }
+                }
+            }
+        }
+        if (-not $state.Check -and -not $state.ApiTask) { $timer.Stop() }
         if (-not $state.Check) { return }
         $result = Receive-BackgroundUpdateCheck $state.Check
         if ($result) {
-            $timer.Stop(); $state.Check = $null; $update.Enabled = $true
+            $state.Check = $null; $update.Enabled = $true
             if ($result.Error) { $updateStatus.Text = 'Could not check. Open Log for details.'; Write-LogMessage $result.Error }
             elseif ($result.Version) { $Global:AvailableVersion = $result.Version; $updateStatus.Text = "Version $($result.Version) available"; $update.Text = 'Install update' }
             else { $updateStatus.Text = 'You are up to date.' }
@@ -967,6 +1033,10 @@ function Show-SettingsForm {
             Show-ThemedMessageBox -Message 'Enter an HTTP or HTTPS API URL without an embedded username/password.' -Title 'API URL' -Icon Warning | Out-Null; return
         }
         if ($destination.Text.Trim() -and -not [IO.Path]::IsPathRooted($destination.Text.Trim())) { Show-ThemedMessageBox -Message 'Use an absolute extraction base folder, or leave it blank.' -Title 'Extraction folder' -Icon Warning | Out-Null; return }
+        if ($ConnectionError) {
+            $candidate = & $getApiSettings
+            if (-not $state.Verified -or $candidate.QbittorrentWebUrl -cne $state.Verified.QbittorrentWebUrl -or $candidate.QbittorrentUsername -cne $state.Verified.QbittorrentUsername -or $candidate.QbittorrentPassword -cne $state.Verified.QbittorrentPassword) { & $testConnection $true; return }
+        }
         $Global:UserSettings.Theme = [string]$theme.SelectedItem; $Global:UserSettings.QbittorrentWebUrl = $url.Text.Trim(); $Global:UserSettings.QbittorrentUsername = $username.Text.Trim(); $Global:UserSettings.QbittorrentPassword = $password.Text
         $Global:UserSettings.LastExtractionPath = $destination.Text.Trim(); $Global:UserSettings.DefaultAdmin = $defaultAdmin.Checked; $Global:UserSettings.CheckForUpdates = $autoUpdate.Checked
         if (-not (Save-UserSettings)) { Show-ThemedMessageBox -Message 'Settings could not be saved. Check the log.' -Title 'Settings' -Icon Error | Out-Null; return }
@@ -975,19 +1045,61 @@ function Show-SettingsForm {
     $cancel.Add_Click({ $form.Close() }.GetNewClosure()); $form.Controls.Add($layout); $form.AcceptButton = $save; $form.CancelButton = $cancel
     $form.Add_Shown({ Set-FormIcon $form }.GetNewClosure())
     try { if ($Global:MainForm) { [void]$form.ShowDialog($Global:MainForm) } else { [void]$form.ShowDialog() }; return $state.Saved }
-    finally { $timer.Stop(); $timer.Dispose(); if ($state.Check) { Stop-BackgroundUpdateCheck $state.Check }; $form.Dispose() }
+    finally { $timer.Stop(); $timer.Dispose(); if ($state.Check) { Stop-BackgroundUpdateCheck $state.Check }; Stop-AppWorker $state.ApiTask; $form.Dispose() }
 }
 
 function Show-SetupMenu {
+    Get-UserSettings
+    $Global:PendingSessionId = $null; $Global:PendingManualFolder = $null
     $form = New-Object Windows.Forms.Form; $form.Name = 'DashboardForm'; $form.Text = "qBitLauncher $Global:ScriptVersion"
-    $form.Size = New-Object Drawing.Size(620, 650); $form.MinimumSize = New-Object Drawing.Size(500, 540); $form.StartPosition = 'CenterScreen'; $form.AutoScaleMode = 'Dpi'
+    $form.Size = New-Object Drawing.Size(620, 800); $form.MinimumSize = New-Object Drawing.Size(500, 680); $form.StartPosition = 'CenterScreen'; $form.AutoScaleMode = 'Dpi'
     $form.BackColor = $Global:CurrentTheme.FormBack; $form.ForeColor = $Global:CurrentTheme.TextFore; $form.Font = New-Object Drawing.Font('Segoe UI', 10)
-    $layout = New-Object Windows.Forms.TableLayoutPanel; $layout.Dock = 'Fill'; $layout.Padding = New-Object Windows.Forms.Padding(22); $layout.ColumnCount = 1; $layout.RowCount = 10
+    $layout = New-Object Windows.Forms.TableLayoutPanel; $layout.Dock = 'Fill'; $layout.Padding = New-Object Windows.Forms.Padding(22); $layout.ColumnCount = 1; $layout.RowCount = 15
     [void]$layout.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent', 100)))
     $title = New-Object Windows.Forms.Label; $title.Text = 'qBitLauncher'; $title.Font = New-Object Drawing.Font('Segoe UI', 20, [Drawing.FontStyle]::Bold); $title.Dock = 'Fill'
     [void]$layout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', 54))); [void]$layout.Controls.Add($title)
-    $desc = New-Object Windows.Forms.Label; $desc.Text = 'Open a folder, manage integrations, or return to a recent download.'; $desc.Dock = 'Fill'
+    $desc = New-Object Windows.Forms.Label; $desc.Text = 'Reopen a saved session, choose a folder, or manage integrations.'; $desc.Dock = 'Fill'
     [void]$layout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', 48))); [void]$layout.Controls.Add($desc)
+    $sessionsHeading = New-Object Windows.Forms.Label; $sessionsHeading.Text = 'Recent sessions'; $sessionsHeading.Dock = 'Fill'
+    [void]$layout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', 26))); [void]$layout.Controls.Add($sessionsHeading)
+    $sessions = New-Object Windows.Forms.ComboBox; $sessions.Name = 'RecentSessions'; $sessions.DropDownStyle = 'DropDownList'; $sessions.FlatStyle = 'Flat'; $sessions.Dock = 'Fill'
+    [void]$layout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', 38))); [void]$layout.Controls.Add($sessions)
+    $sessionDetails = New-Object Windows.Forms.Label; $sessionDetails.Name = 'SessionFolder'; $sessionDetails.Dock = 'Fill'; $sessionDetails.AutoEllipsis = $true; $sessionDetails.UseMnemonic = $false; $sessionDetails.Tag = 'Muted'
+    [void]$layout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', 38))); [void]$layout.Controls.Add($sessionDetails)
+    $sessionActions = New-Object Windows.Forms.FlowLayoutPanel; $sessionActions.Dock = 'Fill'; $sessionActions.WrapContents = $false
+    $reopen = New-Object Windows.Forms.Button; $reopen.Name = 'ReopenSession'; $reopen.Text = 'Reopen session'; $reopen.AutoSize = $true; $reopen.Height = 32; Set-ThemedButton $reopen
+    $forgetSession = New-Object Windows.Forms.Button; $forgetSession.Name = 'ForgetSession'; $forgetSession.Text = 'Forget session'; $forgetSession.AutoSize = $true; $forgetSession.Height = 32; Set-ThemedButton $forgetSession
+    $sessionActions.Controls.AddRange(@($reopen, $forgetSession))
+    [void]$layout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', 40))); [void]$layout.Controls.Add($sessionActions)
+    $sessionState = @{ Items = @() }
+    $sessions.Add_SelectedIndexChanged({
+        $selected = $sessions.SelectedIndex -ge 0
+        $reopen.Enabled = $selected; $forgetSession.Enabled = $selected
+        if ($selected) { $sessionDetails.Text = $sessionState.Items[$sessions.SelectedIndex].RootFolder }
+        else { $sessionDetails.Text = 'Sessions are saved automatically after extraction or opening game files.' }
+    }.GetNewClosure())
+    $refreshSessions = {
+        $sessions.Items.Clear(); $sessionState.Items = @(Get-LauncherSessions)
+        foreach ($entry in $sessionState.Items) { [void]$sessions.Items.Add([string]$entry.Name) }
+        $reopen.Enabled = $sessions.Items.Count -gt 0; $forgetSession.Enabled = $reopen.Enabled
+        if ($sessions.Items.Count) { $sessions.SelectedIndex = 0 }
+        else { $sessionDetails.Text = 'Sessions are saved automatically after extraction or opening game files.' }
+    }.GetNewClosure()
+    & $refreshSessions
+    $reopen.Add_Click({
+        if ($sessions.SelectedIndex -lt 0) { return }
+        try {
+            $entry = Get-LauncherSessionRequest -Id $sessionState.Items[$sessions.SelectedIndex].Id
+            $Global:PendingSessionId = $entry.Id; $Global:PendingManualFolder = $entry.RootFolder
+            $form.DialogResult = [Windows.Forms.DialogResult]::OK; $form.Close()
+        }
+        catch { Show-ThemedMessageBox -Message $_.Exception.Message -Title 'Session unavailable' -Icon Warning | Out-Null }
+    }.GetNewClosure())
+    $forgetSession.Add_Click({
+        if ($sessions.SelectedIndex -ge 0) { [void](Remove-LauncherSession -Id $sessionState.Items[$sessions.SelectedIndex].Id); & $refreshSessions }
+    }.GetNewClosure())
+    $foldersHeading = New-Object Windows.Forms.Label; $foldersHeading.Text = 'Recent folders'; $foldersHeading.Dock = 'Fill'
+    [void]$layout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', 26))); [void]$layout.Controls.Add($foldersHeading)
     $recent = New-Object Windows.Forms.ComboBox; $recent.Name = 'RecentFolders'; $recent.DropDownStyle = 'DropDownList'; $recent.FlatStyle = 'Flat'; $recent.Dock = 'Fill'
     $refreshRecent = { $recent.Items.Clear(); foreach ($path in @($Global:UserSettings.RecentFolders)) { [void]$recent.Items.Add([string]$path) }; if ($recent.Items.Count) { $recent.SelectedIndex = 0 } }.GetNewClosure()
     & $refreshRecent
@@ -1017,5 +1129,5 @@ function Show-SetupMenu {
     $form.Controls.Add($layout); $Global:MainForm = $form
     Add-UpdatePolling -Form $form -OnAvailable { param($version) $desc.Text = "Update $version available — open Settings to install it." }.GetNewClosure()
     $form.Add_Shown({ Set-FormIcon $form }.GetNewClosure())
-    try { [void]$form.ShowDialog(); return $state.Result } finally { $form.Dispose(); $Global:MainForm = $null }
+    try { [void]$form.ShowDialog(); if ($Global:PendingSessionId) { return [Windows.Forms.DialogResult]::OK }; return $state.Result } finally { $form.Dispose(); $Global:MainForm = $null }
 }

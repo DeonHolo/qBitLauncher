@@ -50,7 +50,8 @@ function Invoke-WebRequest {
     if ($script:failConnect) { throw 'Unable to connect to the remote server' }
     $isLogin = $Uri -match '/auth/login$'
     if ($script:httpFailure -and $isLogin -eq $script:failLogin) { throw (New-Object QBApiFixtureException $script:httpFailure) }
-    return [pscustomobject]@{ Content = $(if ($isLogin) { $script:loginContent } else { '' }) }
+    if ($isLogin) { return [pscustomobject]@{ Content = $script:loginContent } }
+    return [pscustomobject]@{ Content = $(if ($Uri -match '/app/version$') { 'v5.2.4' } else { '' }) }
 }
 
 try {
@@ -58,7 +59,7 @@ try {
     $tokens = $null; $errors = $null
     $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '..\Source\App.ps1'), [ref]$tokens, [ref]$errors)
     if ($errors.Count) { throw ($errors.Message -join "`n") }
-    foreach ($name in @('Remove-QBittorrentTorrent', 'Get-QBittorrentApiBaseUrl', 'Get-QBittorrentApiUri', 'Test-QBittorrentApiUrlIsLocal', 'Get-QBittorrentApiPort', 'Get-QBittorrentWebApiState', 'Set-QBittorrentIniValue', 'Test-QBittorrentConnectionFailureMessage', 'Invoke-QBittorrentLocalApiRepairFlow', 'Stop-QBittorrentGracefully')) {
+    foreach ($name in @('Remove-QBittorrentTorrent', 'Connect-QBittorrentApi', 'Invoke-QBittorrentApiRequest', 'Get-QBittorrentApiBaseUrl', 'Get-QBittorrentApiUri', 'Test-QBittorrentApiUrlIsLocal', 'Get-QBittorrentApiPort', 'Get-QBittorrentWebApiState', 'Set-QBittorrentIniValue', 'Test-QBittorrentConnectionFailureMessage', 'Invoke-QBittorrentLocalApiRepairFlow', 'Stop-QBittorrentGracefully')) {
         $definition = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $false)
         if (-not $definition) { throw "Missing function: $name" }
         Invoke-Expression $definition.Extent.Text
@@ -87,7 +88,7 @@ public sealed class QBApiTransportFixture : System.IDisposable {
     }
     private void Run() {
         try {
-            for (int i = 0; i < 2; i++) {
+            for (int i = 0; i < 3; i++) {
                 using (var client = listener.AcceptTcpClient())
                 using (var stream = client.GetStream())
                 using (var reader = new System.IO.StreamReader(stream, System.Text.Encoding.ASCII, false, 1024, true)) {
@@ -110,7 +111,7 @@ public sealed class QBApiTransportFixture : System.IDisposable {
                         read += count;
                     }
                     request.Append(body); Requests.Add(request.ToString());
-                    string content = i == 0 ? "Ok.\n" : "";
+                    string content = i == 0 ? "Ok.\n" : i == 1 ? "v5.2.4" : "";
                     string cookie = i == 0 ? "Set-Cookie: SID=fixture-session; Path=/\r\n" : "";
                     byte[] response = System.Text.Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\n" + cookie + "Content-Type: text/plain; charset=UTF-8\r\nContent-Length: " + content.Length + "\r\nConnection: close\r\n\r\n" + content);
                     stream.Write(response, 0, response.Length); stream.Flush();
@@ -172,7 +173,8 @@ public sealed class QBApiTransportFixture : System.IDisposable {
             $script:requests.Clear(); $script:httpFailure = $status; $script:failLogin = $login
             $Global:UserSettings.QbittorrentUsername = $(if ($login) { 'fixture' } else { '' })
             $failure = Get-ApiFailure { Remove-QBittorrentTorrent -TorrentHash ('a' * 40) -DeleteFiles $false }
-            if ($status -in @(401, 403)) { Assert-Api ($failure -match 'username/password') 'A rejected login/removal must request the existing credentials.' }
+            if ($status -eq 403 -and $login) { Assert-Api ($failure -match 'temporary block' -and $failure -match 'Test connection') 'A blocked login must explain the possible temporary ban instead of encouraging repeated login attempts.' }
+            elseif ($status -in @(401, 403)) { Assert-Api ($failure -match 'username/password') 'A rejected login/removal must request the existing credentials.' }
             else { Assert-Api ($failure -match "HTTP $status") 'An HTTP failure lost its status.' }
             Assert-Api (-not (Test-QBittorrentConnectionFailureMessage $failure)) 'HTTP failure incorrectly triggered connection repair.'
             Assert-Api ($script:requests.Count -eq 1) 'A failed login was followed by a delete request.'
@@ -186,13 +188,22 @@ public sealed class QBApiTransportFixture : System.IDisposable {
     $Global:UserSettings.QbittorrentWebUrl = ' http://127.0.0.1:8080/proxy/ '
     $Global:UserSettings.QbittorrentPassword = 'fixture-secret'
     Remove-QBittorrentTorrent -TorrentHash (' ' + ('a' * 40) + ' ') -DeleteFiles $false
-    Assert-Api ($script:requests.Count -eq 2 -and $script:requests[0].Uri -eq 'http://127.0.0.1:8080/proxy/api/v2/auth/login' -and $script:requests[1].Uri -eq 'http://127.0.0.1:8080/proxy/api/v2/torrents/delete') 'Authenticated removal did not use the configured URL.'
-    Assert-Api ([object]::ReferenceEquals($script:requests[0].Session, $script:requests[1].Session)) 'Removal lost the login session.'
+    Assert-Api ($script:requests.Count -eq 3 -and $script:requests[0].Uri -eq 'http://127.0.0.1:8080/proxy/api/v2/auth/login' -and $script:requests[1].Uri -eq 'http://127.0.0.1:8080/proxy/api/v2/app/version' -and $script:requests[2].Uri -eq 'http://127.0.0.1:8080/proxy/api/v2/torrents/delete') 'Authenticated removal did not verify its session before deleting.'
+    Assert-Api ([object]::ReferenceEquals($script:requests[0].Session, $script:requests[2].Session)) 'Removal lost the login session.'
     Assert-Api ($script:requests[0].Body.username -eq 'fixture' -and $script:requests[0].Body.password -ceq 'fixture-secret') 'Login did not use the saved credentials.'
-    Assert-Api ($script:requests[1].Body.hashes -eq ('a' * 40) -and $script:requests[1].Body.deleteFiles -ceq 'false') 'Entry removal changed its identity or enabled file deletion.'
+    Assert-Api ($script:requests[2].Body.hashes -eq ('a' * 40) -and $script:requests[2].Body.deleteFiles -ceq 'false') 'Entry removal changed its identity or enabled file deletion.'
     foreach ($request in $script:requests) {
         Assert-Api ($request.Headers.Origin -ceq 'http://127.0.0.1:8080' -and $request.Headers.Referer -ceq 'http://127.0.0.1:8080/proxy/') 'API requests did not identify the configured origin for CSRF validation.'
     }
+    $script:requests.Clear()
+    $connection = Connect-QBittorrentApi
+    Assert-Api ($connection.Version -ceq 'v5.2.4' -and $script:requests.Count -eq 2 -and @($script:requests | Where-Object { $_.Uri -match '/torrents/' }).Count -eq 0) 'Testing credentials must verify access without changing any torrent.'
+    foreach ($content in @('', [Text.Encoding]::UTF8.GetBytes('Ok.'))) {
+        $script:loginContent = $content; $script:requests.Clear()
+        $connection = Connect-QBittorrentApi
+        Assert-Api ($connection.Version -ceq 'v5.2.4' -and $script:requests.Count -eq 2) 'Login response encoding or an empty response must be verified by reading the version.'
+    }
+    $script:loginContent = 'Ok.'
     $script:failConnect = $true
     $failure = Get-ApiFailure { Remove-QBittorrentTorrent -TorrentHash ('a' * 40) -DeleteFiles $false }
     Assert-Api ($failure -match 'Could not connect' -and (Test-QBittorrentConnectionFailureMessage $failure)) 'Connection failures must remain eligible for repair.'
@@ -203,11 +214,15 @@ public sealed class QBApiTransportFixture : System.IDisposable {
 
     # Exercise the real Windows HTTP cmdlet against an isolated loopback fixture.
     Remove-Item -Path Function:\Invoke-WebRequest
+    Add-Type -AssemblyName System.Web
     $transport = New-Object QBApiTransportFixture
     $Global:UserSettings.QbittorrentWebUrl = 'http://127.0.0.1:' + $transport.Port
+    $Global:UserSettings.QbittorrentPassword = '  fixture &+=% ' + [char]0x6e38 + '  '
     Remove-QBittorrentTorrent -TorrentHash ('a' * 40) -DeleteFiles $false
-    Assert-Api ($transport.Requests.Count -eq 2 -and -not $transport.Error) 'The Windows HTTP transport did not complete login and removal.'
-    Assert-Api ($transport.Requests[1] -match 'Cookie: SID=fixture-session' -and $transport.Requests[1] -match 'deleteFiles=false') 'The real removal request lost the login cookie or enabled file deletion.'
+    Assert-Api ($transport.Requests.Count -eq 3 -and -not $transport.Error) 'The Windows HTTP transport did not complete login, verification, and removal.'
+    Assert-Api ($transport.Requests[2] -match 'Cookie: SID=fixture-session' -and $transport.Requests[2] -match 'deleteFiles=false') 'The real removal request lost the login cookie or enabled file deletion.'
+    $body = ($transport.Requests[0] -split "`r?`n")[-1]
+    Assert-Api ([Web.HttpUtility]::ParseQueryString($body)['password'] -ceq $Global:UserSettings.QbittorrentPassword) 'The Windows HTTP transport changed password whitespace, symbols, or Unicode characters.'
     foreach ($request in $transport.Requests) {
         Assert-Api ($request -match ('Origin: ' + [regex]::Escape($Global:UserSettings.QbittorrentWebUrl)) -and $request -match ('Referer: ' + [regex]::Escape($Global:UserSettings.QbittorrentWebUrl + '/'))) 'The Windows HTTP cmdlet did not send the configured origin and referer.'
     }

@@ -238,6 +238,33 @@ function Start-Runnable {
     if ($process) { $process.Dispose() }
 }
 
+function New-LauncherSessionStartInfo {
+    param([Parameter(Mandatory = $true)][string]$SessionId)
+    [void](Get-LauncherSessionRequest -Id $SessionId)
+    $target = [IO.Path]::GetFullPath($Global:ExecutablePath)
+    if (-not [IO.File]::Exists($target)) { throw 'The launcher file was moved or deleted. Reopen qBitLauncher from its current location.' }
+    $info = New-Object Diagnostics.ProcessStartInfo
+    $info.UseShellExecute = $false; $info.CreateNoWindow = $true
+    $info.WorkingDirectory = [IO.Path]::GetDirectoryName($target)
+    $arguments = @('-SavedSessionId', $SessionId)
+    if ($Global:IsCompiledExe) { $info.FileName = $target }
+    else {
+        $info.FileName = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $info.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+        $arguments = @('-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', $target) + $arguments
+    }
+    $info.Arguments = ConvertTo-WindowsArgumentString -Arguments $arguments
+    return $info
+}
+
+function Start-LauncherSessionWindow {
+    param([Parameter(Mandatory = $true)][string]$SessionId)
+    $info = New-LauncherSessionStartInfo -SessionId $SessionId
+    $process = [Diagnostics.Process]::Start($info)
+    if (-not $process) { throw 'The saved session could not be opened in a new window.' }
+    $process.Dispose()
+}
+
 function Initialize-FolderScanner {
     if ('QBitLauncher.FolderScan' -as [type]) { return }
     Add-Type -TypeDefinition @'

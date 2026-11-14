@@ -7,7 +7,21 @@ $script:calls = New-Object System.Collections.ArrayList
 $script:messages = New-Object System.Collections.ArrayList
 $script:failApi = $false
 $script:failFiles = $false
+$script:apiError = 'API fixture unavailable'
+$script:settingsSaved = $false
+$script:settingsOpened = 0
+$script:latestSettings = $null
+$script:removedSessions = New-Object System.Collections.ArrayList
 $Global:UserSettings = @{}
+function Get-UserSettings { if ($script:latestSettings) { $Global:UserSettings = $script:latestSettings } }
+function Set-LauncherSessionTorrentRemoved { param($Id); [void]$script:removedSessions.Add($Id) }
+function Show-SettingsForm {
+    param($ConnectionError)
+    if ($ConnectionError -notmatch 'login failed|requires valid Web UI credentials') { throw 'Credential recovery must show the actual authentication error.' }
+    $script:settingsOpened++
+    if ($script:settingsSaved) { $script:failApi = $false }
+    return $script:settingsSaved
+}
 
 function Assert-CleanupSelection {
     param([bool]$Condition, [string]$Message)
@@ -21,8 +35,8 @@ function Invoke-ResponsiveTask {
 }
 function Remove-QBittorrentTorrent {
     param($TorrentHash, [bool]$DeleteFiles)
-    [void]$script:calls.Add(@{ Kind = 'Torrent'; Hash = $TorrentHash; DeleteFiles = $DeleteFiles })
-    if ($script:failApi) { throw 'API fixture unavailable' }
+    [void]$script:calls.Add(@{ Kind = 'Torrent'; Hash = $TorrentHash; DeleteFiles = $DeleteFiles; Username = $Global:UserSettings.QbittorrentUsername })
+    if ($script:failApi) { throw $script:apiError }
 }
 function Invoke-QBittorrentLocalApiRepairFlow { return @{ Status = 'Cancelled'; Message = 'API fixture unavailable' } }
 function Invoke-CleanupPlan {
@@ -58,18 +72,37 @@ try {
     try { $null = Invoke-CleanupSelection -Choice $choice -TorrentHash ('a' * 40) } catch { $rejected = $true }
     Assert-CleanupSelection ($rejected -and @($script:calls | Where-Object { $_.Kind -eq 'Files' }).Count -eq 0) 'Failed entry removal must leave local files alone.'
     $script:failApi = $false; $script:failFiles = $true; $script:calls.Clear(); $script:messages.Clear(); $rejected = $false
-    try { $null = Invoke-CleanupSelection -Choice $choice -TorrentHash ('a' * 40) -OnMessage { param($message) [void]$script:messages.Add($message) } } catch { $rejected = $true }
+    try { $null = Invoke-CleanupSelection -Choice $choice -TorrentHash ('a' * 40) -SessionId 'fixture-session' -OnMessage { param($message) [void]$script:messages.Add($message) } } catch { $rejected = $true }
     Assert-CleanupSelection ($rejected -and $script:messages.Contains('qBittorrent entry removed')) 'A local-file failure must preserve the reported successful entry removal.'
+    Assert-CleanupSelection ($script:removedSessions.Contains('fixture-session')) 'The saved session must remember torrent removal even when local file cleanup fails afterward.'
     $script:failFiles = $false; $script:calls.Clear(); $choice.RemoveTorrent = $false; $choice.Permanent = $true
     $null = Invoke-CleanupSelection -Choice $choice
     Assert-CleanupSelection ($script:calls.Count -eq 1 -and $script:calls[0].Permanent) 'The explicit permanent-file choice must remain available.'
+    $choice.RemoveTorrent = $true; $script:calls.Clear(); $script:failApi = $true
+    $script:apiError = 'qBittorrent login failed. Credentials rejected.'; $script:settingsSaved = $true
+    $null = Invoke-CleanupSelection -Choice $choice -TorrentHash ('a' * 40)
+    Assert-CleanupSelection ($script:settingsOpened -eq 1 -and $script:calls.Count -eq 3 -and $script:calls[0].Kind -eq 'Torrent' -and $script:calls[1].Kind -eq 'Torrent' -and $script:calls[2].Kind -eq 'Files') 'Correcting a rejected login must retry the entry first, then carry out the original local plan.'
+    Assert-CleanupSelection ($script:calls[2].Permanent -and $script:calls[2].Acknowledged -and $script:calls[2].Plan -eq $choice.Plan) 'Credential recovery must retain the original deletion choices and acknowledgement.'
+    $script:failApi = $true; $script:settingsSaved = $false; $script:calls.Clear(); $cancelled = $false
+    try { $null = Invoke-CleanupSelection -Choice $choice -TorrentHash ('a' * 40) } catch [OperationCanceledException] { $cancelled = $true }
+    Assert-CleanupSelection ($cancelled -and $script:calls.Count -eq 1 -and $script:calls[0].Kind -eq 'Torrent') 'Cancelling credential correction must leave files untouched and avoid another login.'
+    $script:apiError = 'qBittorrent blocked the login request (HTTP 403). Temporary block.'
+    $beforeSettings = $script:settingsOpened; $script:calls.Clear(); $rejected = $false
+    try { $null = Invoke-CleanupSelection -Choice $choice -TorrentHash ('a' * 40) } catch { $rejected = $true }
+    Assert-CleanupSelection ($rejected -and $script:settingsOpened -eq $beforeSettings -and $script:calls.Count -eq 1) 'A temporary login block must not start another login attempt or delete files.'
+    $script:failApi = $false; $script:latestSettings = @{ QbittorrentUsername = 'updated-in-another-window' }; $script:calls.Clear()
+    $null = Invoke-CleanupSelection -Choice $choice -TorrentHash ('a' * 40)
+    Assert-CleanupSelection ($script:calls[0].Username -ceq 'updated-in-another-window') 'Cleanup must reload credentials saved by another open launcher window.'
     # Verify the real API wrapper's form body as well as the orchestration calls.
     $tokens = $null; $errors = $null
     $appAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '..\Source\App.ps1'), [ref]$tokens, [ref]$errors)
-    $apiDefinition = $appAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Remove-QBittorrentTorrent' }, $false)[0]
-    Invoke-Expression $apiDefinition.Extent.Text
+    foreach ($name in @('Remove-QBittorrentTorrent', 'Connect-QBittorrentApi', 'Invoke-QBittorrentApiRequest')) {
+        $apiDefinition = $appAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $false)[0]
+        Invoke-Expression $apiDefinition.Extent.Text
+    }
     function Invoke-WebRequest {
         param($Uri, $Method, $Body, $ContentType, $WebSession, $Headers, [switch]$UseBasicParsing, $TimeoutSec, $ErrorAction)
+        if ($Uri -match '/app/version$') { return [pscustomobject]@{ Content = 'v5.2.4' } }
         $script:apiBody = $Body
     }
     $Global:UserSettings = @{ QbittorrentWebUrl = 'http://127.0.0.1:8080'; QbittorrentUsername = '' }

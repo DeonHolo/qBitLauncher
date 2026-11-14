@@ -40,6 +40,7 @@ function New-DefaultUserSettings {
         QbittorrentUsername = ''
         QbittorrentPassword = ''
         FilePreferences = @{}
+        SavedSessions = @{}
         RecentFolders = @()
         LastExtractionPath = ''
         DefaultAdmin = $true
@@ -106,7 +107,7 @@ function Get-UserSettings {
         }
         catch { Write-LogMessage ('Settings could not be loaded; using defaults. ' + $_.Exception.GetType().Name) }
     }
-    foreach ($key in @('FilePreferences', 'WindowState')) {
+    foreach ($key in @('FilePreferences', 'WindowState', 'SavedSessions')) {
         if ($defaults[$key] -isnot [System.Collections.IDictionary]) { $defaults[$key] = @{} }
     }
     if ($null -eq $defaults.RecentFolders -or $defaults.RecentFolders -is [string]) {
@@ -315,6 +316,84 @@ function Remove-RecentFolder {
     param([Parameter(Mandatory = $true)][string]$Path)
     $Global:UserSettings.RecentFolders = @($Global:UserSettings.RecentFolders | Where-Object { -not [string]::Equals($_, $Path, [StringComparison]::OrdinalIgnoreCase) })
     return Save-UserSettings
+}
+
+function Get-LauncherSessions {
+    if ($Global:UserSettings.SavedSessions -isnot [System.Collections.IDictionary]) { return }
+    $sessions = foreach ($id in $Global:UserSettings.SavedSessions.Keys) {
+        $entry = ConvertTo-SettingsHashtable $Global:UserSettings.SavedSessions[$id]
+        if ($entry -isnot [System.Collections.IDictionary] -or -not $entry.SourcePath -or -not $entry.RootFolder) { continue }
+        if (-not [IO.Path]::IsPathRooted($entry.SourcePath) -or -not [IO.Path]::IsPathRooted($entry.RootFolder)) { continue }
+        $entry.Id = [string]$id
+        if (-not $entry.Name) { $entry.Name = [IO.Path]::GetFileName($entry.RootFolder.TrimEnd([char]92)) }
+        $entry
+    }
+    return $sessions | Sort-Object @{ Expression = { $_.LastOpenedUtc }; Descending = $true }, Name
+}
+
+function Get-LauncherSession {
+    param([string]$Id, [string]$SourcePath, [string]$RootFolder)
+    foreach ($entry in @(Get-LauncherSessions)) {
+        if ($Id) { if ($entry.Id -eq $Id) { return $entry }; continue }
+        if ($SourcePath -and (Get-PreferencePathKey $entry.SourcePath) -ne (Get-PreferencePathKey $SourcePath)) { continue }
+        if ($RootFolder -and (Get-PreferencePathKey $entry.RootFolder) -ne (Get-PreferencePathKey $RootFolder)) { continue }
+        if ($SourcePath -or $RootFolder) { return $entry }
+    }
+    return $null
+}
+
+function Save-LauncherSession {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourcePath,
+        [Parameter(Mandatory = $true)][string]$RootFolder,
+        [string]$ArchivePath, [string]$TorrentHash, [string]$TorrentName
+    )
+    $source = Get-NormalizedServicePath $SourcePath; $root = Get-NormalizedServicePath $RootFolder
+    $id = Get-ServiceKeyHash ((Get-PreferencePathKey $source) + "`n" + (Get-PreferencePathKey $root))
+    $previous = Get-LauncherSession -Id $id
+    $now = [DateTime]::UtcNow.ToString('o')
+    $entry = @{
+        Id = $id; SourcePath = $source; RootFolder = $root
+        RunnablePath = $(if ([IO.Path]::GetExtension($source) -in @('.exe', '.bat', '.cmd')) { $source } else { '' })
+        ArchivePath = $(if ($ArchivePath) { Get-NormalizedServicePath $ArchivePath } elseif ($previous) { $previous.ArchivePath } else { '' })
+        TorrentHash = $(if ($TorrentHash) { $TorrentHash.Trim() } elseif ($previous) { [string]$previous.TorrentHash } else { '' })
+        TorrentName = $(if ($TorrentName) { $TorrentName } elseif ($previous) { [string]$previous.TorrentName } else { '' })
+        TorrentRemoved = $(if ($TorrentHash) { $false } elseif ($previous) { [bool]$previous.TorrentRemoved } else { $false })
+        CreatedUtc = $(if ($previous -and $previous.CreatedUtc) { $previous.CreatedUtc } else { $now })
+        LastOpenedUtc = $now
+    }
+    $entry.Name = if ($entry.TorrentName) { $entry.TorrentName } else { [IO.Path]::GetFileName($root.TrimEnd([char]92)) }
+    if (-not $entry.Name) { $entry.Name = $root }
+    if ($Global:UserSettings.SavedSessions -isnot [System.Collections.IDictionary]) { $Global:UserSettings.SavedSessions = @{} }
+    $Global:UserSettings.SavedSessions[$id] = $entry
+    if (-not (Save-UserSettings)) { Write-LogMessage 'The session could not be saved. Its files can still be opened manually.' }
+    return $entry
+}
+
+function Remove-LauncherSession {
+    param([Parameter(Mandatory = $true)][string]$Id)
+    if ($Global:UserSettings.SavedSessions -is [System.Collections.IDictionary]) { $Global:UserSettings.SavedSessions.Remove($Id) }
+    return Save-UserSettings
+}
+
+function Set-LauncherSessionTorrentRemoved {
+    param([Parameter(Mandatory = $true)][string]$Id)
+    $entry = Get-LauncherSession -Id $Id
+    if (-not $entry) { return }
+    $entry.TorrentHash = ''; $entry.TorrentRemoved = $true
+    $Global:UserSettings.SavedSessions[$Id] = $entry
+    if (-not (Save-UserSettings)) { Write-LogMessage 'The torrent was removed, but its saved session could not be updated.' }
+}
+
+function Get-LauncherSessionRequest {
+    param([Parameter(Mandatory = $true)][string]$Id)
+    $entry = Get-LauncherSession -Id $Id
+    if (-not $entry) { throw 'This saved session is no longer available. Select another session or open its folder manually.' }
+    if (-not (Test-Path -LiteralPath $entry.RootFolder -PathType Container)) {
+        throw "The saved game folder has moved or was deleted:`n$($entry.RootFolder)`n`nChoose its new location manually, or forget this session."
+    }
+    if ($entry.RunnablePath -and -not (Test-Path -LiteralPath $entry.RunnablePath -PathType Leaf)) { throw "The saved application has moved or was deleted:`n$($entry.RunnablePath)" }
+    return $entry
 }
 
 function New-WorkflowLock {

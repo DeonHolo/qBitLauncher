@@ -282,7 +282,8 @@ function Update-Script {
         }
         $arguments = @()
         # Preserve positional empty values when later arguments are present.
-        if ($filePathFromQB -or $torrentHashFromQB -or $torrentNameFromQB) { $arguments = @([string]$filePathFromQB, [string]$torrentHashFromQB, [string]$torrentNameFromQB) }
+        if ($SavedSessionId) { $arguments = @('-SavedSessionId', [string]$SavedSessionId) }
+        elseif ($filePathFromQB -or $torrentHashFromQB -or $torrentNameFromQB) { $arguments = @([string]$filePathFromQB, [string]$torrentHashFromQB, [string]$torrentNameFromQB) }
         $current = [Diagnostics.Process]::GetCurrentProcess()
         $payload = @{
             TargetPath = $targetPath; StagedPath = $stagedPath; BackupPath = $targetPath + '.previous.bak'

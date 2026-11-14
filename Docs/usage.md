@@ -18,11 +18,25 @@ Different games open and extract independently. A large extraction or an open re
 
 The folder scan prefers useful shallow archive payloads and avoids common nested asset archives. When several payloads are plausible, choose one or choose executable scanning. An already runnable folder can go straight to executable selection instead of prompting about a nested `Plugins\icons.zip`.
 
-For extraction, select the destination, reuse existing files, or choose **Skip Extraction** to scan the original folder. The destination base is remembered. RAR prefers WinRAR; the other supported formats prefer 7-Zip GUI, with the other installed tool available as fallback. The external extractor owns extraction progress and cancellation.
+For extraction, select the destination and choose **Extract**. **Open extracted files** opens an existing destination without extracting again; **Scan source folder** scans the archive's original location instead. The destination base is remembered. RAR prefers WinRAR; the other supported formats prefer 7-Zip GUI, with the other installed tool available as fallback. The external extractor owns extraction progress and cancellation.
 
 The scan window shows the current folder, elapsed time, files checked, and runnable files found. **Use files found** stops further discovery and opens the available results. **Cancel** returns without waiting for the background task. Scanning reads file metadata rather than large file contents.
 
 An extractor exit code alone is not reported as verified output. When 7-Zip can list the archive, the scan compares expected paths and sizes with the chosen destination. Missing or short files produce an incomplete-output message; keep the source archive. Encrypted headers or a missing listing tool can prevent this check, which the log records. Size checks do not establish file integrity or confirm that an installer will run.
+
+## Reopen a session
+
+Open `qBitLauncher.exe` without arguments, select a game under **Recent sessions**, and click **Reopen session**. qBitLauncher remembers the original source, selected archive, extraction destination, and torrent hash/name. Shortcut labels, arguments, and the preferred executable remain available through the saved file preferences.
+
+While a game window is already open, use **More → Reopen saved session → game**. Each selection starts a separate launcher window with that saved game's context. The current window and its selections stay open. The menu refreshes when opened, so sessions saved by another window appear too; the current session is omitted.
+
+Reopening scans the saved game folder and returns to executable selection. It does not start extraction or scan the archive's parent folder. A session started from one EXE, BAT, or CMD reopens that file alone. When the source archive still exists, extraction size checks remain available.
+
+Sessions are saved after extraction returns, before scanning, and when runnable results open. You can return after closing a result window or cancelling its scan. Removing the source archive does not prevent reopening the extracted game. A missing game folder produces a message; choose its new location manually rather than falling back to another folder.
+
+**Forget session** removes only the history entry. Cleanup keeps the original source and extracted locations separate, and remembers when the qBittorrent entry has already been removed. Every cleanup starts with unticked choices and a fresh preview.
+
+Older versions did not record complete sessions. For an older extraction, open its archive in qBitLauncher, set the destination to the existing game folder, and choose **Open extracted files**. This creates a session for future use. Torrent cleanup is available when a torrent hash was supplied by qBittorrent or retained by an existing saved session.
 
 ## Find and launch a runnable
 

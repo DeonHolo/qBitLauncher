@@ -27,7 +27,7 @@ Enable Show helpers/uninstallers and clear Search. Ranking can mistake uncommon 
 
 ## An archive choice appears
 
-Root/shallow payload archives take precedence over deep asset archives. If multiple payloads are plausible, choose the intended archive or Show executables. In the extraction dialog, Skip Extraction scans the original folder. Multipart sets start from the first supported volume; keep the remaining volumes beside it for the external extractor.
+Root/shallow payload archives take precedence over deep asset archives. If multiple payloads are plausible, choose the intended archive or Show executables. In the extraction dialog, Open extracted files opens the selected destination; Scan source folder scans the original location. Multipart sets start from the first supported volume; keep the remaining volumes beside it for the external extractor.
 
 ## Open several games at once
 
@@ -39,13 +39,23 @@ The updated scan displays checked files, found runnables, the current folder, an
 
 Check the destination shown by qBitLauncher: it may differ from extracting beside the source archive in Explorer. If output validation reports missing or short files, keep the original archive and retry extraction into that destination. The extractor's exit code alone does not establish complete output. When archive metadata cannot be listed, the log explicitly says that file sizes were not verified.
 
+## Return after closing a game window
+
+Open qBitLauncher without a file and use **Recent sessions → Reopen session**. Saved sessions retain the source archive/download, game folder, and torrent identity. Closing the window leaves that record in `config.json`; **Forget session** removes the record without deleting files.
+
+For an extraction made before session history existed, open its archive, choose the existing destination, and click **Open extracted files**. **Scan source folder** scans the archive's containing location and can cover all of `D:\Games` when the archive is stored there.
+
 ## Launch arguments or administrator mode
 
 Arguments and admin mode are remembered per file. New files initially request elevation; Settings changes that default. Cancelling UAC offers a non-admin retry. BAT/CMD launches use a Unicode helper and preserve literal percent characters in target paths. Programs may impose their own filename, permission, or argument requirements.
 
 ## qBittorrent API cannot connect or authenticate
 
-Open More → Settings and check the API URL and qBittorrent credentials. If HTTPS is enabled in qBittorrent, the URL must use HTTPS too. A 401/403 response requires the correct credentials.
+Open More → Settings and enter the API URL and the username and password set in qBittorrent's Web UI options. Use **Test connection** to check those values without changing torrents or files. If HTTPS is enabled in qBittorrent, the URL must use HTTPS too.
+
+When cleanup encounters a rejected login, Settings opens with the error. Correct the credentials and choose **Save and retry cleanup**. The launcher verifies access before saving and continuing with your original cleanup choices. Cancel leaves local files untouched. Other open launcher windows reload saved credentials before their next cleanup attempt.
+
+A 403 response during login can mean qBittorrent temporarily blocked access after too many failed attempts. Wait for the block to expire before testing again. The launcher preserves qBittorrent's password and access rules.
 
 If qBittorrent shows **“WebUI configuration failed. Reason: Credentials are not set”**, open Tools → Options → Web UI. Under Authentication, set a username and use Change the current password to set a password, then click Apply. Enter the same username and password in qBitLauncher → More → Settings and retry cleanup.
 
