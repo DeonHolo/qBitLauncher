@@ -2593,7 +2593,7 @@ if (-not $Global:IsCompiledExe) {
 $ProgressPreference = 'SilentlyContinue'
 
 # Version and update settings
-$Global:ScriptVersion = "3.5.2"
+$Global:ScriptVersion = "3.6.0"
 $Global:MainForm = $null
 $Global:GitHubRawUrl = "https://raw.githubusercontent.com/DeonHolo/qBitLauncher/main/qBitLauncher.ps1"
 $Global:GitHubCommitsUrl = "https://github.com/DeonHolo/qBitLauncher/commits/main"
